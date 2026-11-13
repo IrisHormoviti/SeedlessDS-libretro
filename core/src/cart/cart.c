@@ -457,7 +457,7 @@ uint64_t cart_boot_from_header(cart_t *ctx) {
                     (b == 0x4a355659u && p == 0x7829bc8du  && s == 0x9968ef44u);
                 if (!exc) {
                     if (((nds_t *)mod)->bus.bios_flags & 1) ctx->secure_area_pending = 1;
-                    else cart_key1_decrypt_secure_area(ctx, 0, 0, ((nds_t *)mod)->bus.bios7 + 0x30);
+                    else cart_key1_decrypt_secure_area(ctx, ctx->secure_area, 0, ((nds_t *)mod)->bus.bios7 + 0x30);
                 }
             }
         }
