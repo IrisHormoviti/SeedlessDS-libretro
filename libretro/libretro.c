@@ -797,6 +797,83 @@ void retro_cheat_set(unsigned index, bool enabled, const char *code)
     /* Action Replay / CodeBreaker text parsing can be added later. */
 }
 
+/* ClamOS stores the user's name and birthday in /home/.directory and the
+ * accent in kdeglobals; clam-libretro passes them here. The core rebuilds the
+ * firmware user-settings blocks from this frontend state on boot, so setting
+ * the file on disk alone is not enough. */
+static void apply_clam_firmware_user(void)
+{
+    frontend_t *g = FRONTEND;
+    const char *name = getenv("CLAM_NDS_USER_NAME");
+    const char *color = getenv("CLAM_NDS_FAVORITE_COLOR");
+    const char *month = getenv("CLAM_NDS_BIRTHDAY_MONTH");
+    const char *day = getenv("CLAM_NDS_BIRTHDAY_DAY");
+
+    if (name != NULL) {
+        const unsigned char *p = (const unsigned char *)name;
+        size_t units = 0;
+
+        memset(g->nickname, 0, sizeof g->nickname);
+        while (*p != 0 && units < FRONTEND_NICKNAME_CHARS) {
+            uint32_t codepoint;
+            int extra;
+
+            if (*p < 0x80) {
+                codepoint = *p;
+                extra = 0;
+            } else if ((*p & 0xe0) == 0xc0) {
+                codepoint = *p & 0x1f;
+                extra = 1;
+            } else if ((*p & 0xf0) == 0xe0) {
+                codepoint = *p & 0x0f;
+                extra = 2;
+            } else if ((*p & 0xf8) == 0xf0) {
+                codepoint = *p & 0x07;
+                extra = 3;
+            } else {
+                p++;
+                continue;
+            }
+            p++;
+            while (extra-- > 0) {
+                if ((*p & 0xc0) != 0x80) {
+                    codepoint = 0xfffd;
+                    break;
+                }
+                codepoint = (codepoint << 6) | (*p & 0x3f);
+                p++;
+            }
+            if (codepoint >= 0x10000u) {
+                if (units + 2 > FRONTEND_NICKNAME_CHARS)
+                    break;
+                codepoint -= 0x10000u;
+                g->nickname[units++] = (uint16_t)(0xd800u + (codepoint >> 10));
+                g->nickname[units++] = (uint16_t)(0xdc00u + (codepoint & 0x3ffu));
+            } else {
+                g->nickname[units++] = (uint16_t)codepoint;
+            }
+        }
+    }
+
+    if (color != NULL) {
+        long value = strtol(color, NULL, 10);
+        if (value >= 0 && value <= 15)
+            g->config[1] = (uint32_t)value;
+    }
+
+    /* The DS stores the month 0..=11 and the day 1..=31 in the two words
+     * after the favourite colour. A month of 0 means the birthday is unset;
+     * leave the core's default in place then. */
+    if (month != NULL && day != NULL) {
+        long m = strtol(month, NULL, 10);
+        long d = strtol(day, NULL, 10);
+        if (m >= 1 && m <= 12)
+            g->config[2] = (uint32_t)(m - 1);
+        if (d >= 0 && d <= 31)
+            g->config[3] = (uint32_t)d;
+    }
+}
+
 bool retro_load_game(const struct retro_game_info *info)
 {
     enum retro_pixel_format fmt = RETRO_PIXEL_FORMAT_XRGB8888;
@@ -850,6 +927,7 @@ bool retro_load_game(const struct retro_game_info *info)
     recon_present_set_mode(RECON_PRESENT_PREDICATE | RECON_PRESENT_NO_UPLOAD);
     seedless_audio_reset();
     nds_apply_config(g_nds, g_config_bits);
+    apply_clam_firmware_user();
     g_stylus_x = (float)(SEEDLESS_SCREEN_W / 2);
     g_stylus_y = (float)(SEEDLESS_SCREEN_H / 2);
     g_stylus_touching = 0;
