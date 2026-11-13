@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <math.h>
 #include <pthread.h>
 #include <sched.h>
@@ -671,53 +672,91 @@ size_t retro_serialize_size(void)
     return 8 * 1024 * 1024;
 }
 
+/* The core saves through DraStic's own slot machinery, asynchronously, under
+ * {SEEDLESS_ROOT}/User/savestates/<rom name>_0.dss. The libretro entry points
+ * must therefore wait for that file instead of looking for a made-up path. */
+static void state_file_path(char *path, size_t size)
+{
+    char name[1024];
+    const char *base = strrchr(g_rom_path, '/');
+    size_t n;
+
+    base = base ? base + 1 : g_rom_path;
+    snprintf(name, sizeof name, "%s", base);
+    n = strlen(name);
+    if (n > 4 && strcasecmp(name + n - 4, ".nds") == 0)
+        name[n - 4] = '\0';
+    snprintf(path, size, "%s/User/savestates/%s_0.dss", g_system_dir, name);
+}
+
+static void state_dir_path(char *path, size_t size)
+{
+    snprintf(path, size, "%s/User/savestates", g_system_dir);
+}
+
 bool retro_serialize(void *data, size_t size)
 {
     char path[4096];
+    char dir[4096];
     FILE *f;
     size_t n;
+    int waited;
 
     if (!g_nds || size < 16)
         return false;
 
-    snprintf(path, sizeof path, "%s/seedlessds_serialize.tmp", g_save_dir);
+    state_file_path(path, sizeof path);
+    state_dir_path(dir, sizeof dir);
+    mkdir_p(dir);
+    /* Remove the previous slot so a failed or slow save is never mistaken for
+     * this one. The compositor also removes its snapshot before asking. */
+    unlink(path);
     nds_state_save(g_nds, 0);
-    /* State write is async inside the core; wait briefly via frame sync. */
-    nds_wait_screen(g_nds);
 
-    snprintf(path, sizeof path, "%s/User/save0.dsv", g_system_dir);
-    /* Fallback: try common DraStic-style paths under SEEDLESS_ROOT. */
-    f = fopen(path, "rb");
-    if (!f) {
-        snprintf(path, sizeof path, "%s/save0", g_save_dir);
+    for (waited = 0; waited < 500; waited++) {
+        usleep(10000);
         f = fopen(path, "rb");
+        if (!f)
+            continue;
+        fseek(f, 0, SEEK_END);
+        if (ftell(f) <= 0) {
+            fclose(f);
+            continue;
+        }
+        fseek(f, 0, SEEK_SET);
+        n = fread(data, 1, size, f);
+        fclose(f);
+        if (n > 0) {
+            log_cb(RETRO_LOG_INFO, CORE_NAME ": saved %zu bytes of state\n", n);
+            return true;
+        }
     }
-    if (!f)
-        return false;
-    n = fread(data, 1, size, f);
-    fclose(f);
-    return n > 0;
+    log_cb(RETRO_LOG_ERROR, CORE_NAME ": state file did not appear at %s\n", path);
+    return false;
 }
 
 bool retro_unserialize(const void *data, size_t size)
 {
     char path[4096];
+    char dir[4096];
     FILE *f;
 
     if (!g_nds || !data || size == 0)
         return false;
 
-    snprintf(path, sizeof path, "%s/User/save0.dsv", g_system_dir);
+    state_file_path(path, sizeof path);
+    state_dir_path(dir, sizeof dir);
+    mkdir_p(dir);
     f = fopen(path, "wb");
-    if (!f) {
-        snprintf(path, sizeof path, "%s/save0", g_save_dir);
-        f = fopen(path, "wb");
-    }
     if (!f)
         return false;
-    fwrite(data, 1, size, f);
+    if (fwrite(data, 1, size, f) != size) {
+        fclose(f);
+        return false;
+    }
     fclose(f);
     nds_state_load(g_nds, 0);
+    log_cb(RETRO_LOG_INFO, CORE_NAME ": loaded %zu bytes of state\n", size);
     return true;
 }
 
