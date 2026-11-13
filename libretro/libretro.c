@@ -50,6 +50,9 @@ static bool g_libretro_supports_option_categories;
 static float g_stylus_x = (float)(SEEDLESS_SCREEN_W / 2);
 static float g_stylus_y = (float)(SEEDLESS_SCREEN_H / 2);
 static int g_stylus_touching;
+/* The crosshair is a virtual-stylus aid. A real touchscreen press already
+ * shows the stylus, so drawing it there only obscures the game. */
+static int g_cursor_from_stick;
 #define STYLUS_DEADZONE 0x1800
 #define STYLUS_SPEED_PX 4.5f
 
@@ -382,6 +385,7 @@ static void move_stylus_from_stick(unsigned index)
     if (ax == 0 && ay == 0)
         return;
 
+    g_cursor_from_stick = 1;
     fx = (float)ax / 32767.0f;
     fy = (float)ay / 32767.0f;
     mag = fx * fx + fy * fy;
@@ -461,6 +465,7 @@ static void poll_touch(nds_input_t *input)
             input->touch_down = 1;
             input->touch_x = x;
             input->touch_y = y - SEEDLESS_SCREEN_H;
+            g_cursor_from_stick = 0;
             g_stylus_x = (float)input->touch_x;
             g_stylus_y = (float)input->touch_y;
             g_stylus_touching = 1;
@@ -481,12 +486,14 @@ static void poll_touch(nds_input_t *input)
             input->touch_down = 1;
             input->touch_x = abs_x;
             input->touch_y = abs_y - SEEDLESS_SCREEN_H;
+            g_cursor_from_stick = 0;
             g_stylus_x = (float)input->touch_x;
             g_stylus_y = (float)input->touch_y;
             g_stylus_touching = 1;
         }
     } else if (l3) {
         /* L3 = stylus press at the virtual pointer. */
+        g_cursor_from_stick = 1;
         input->touch_down = 1;
         input->touch_x = (int)(g_stylus_x + 0.5f);
         input->touch_y = (int)(g_stylus_y + 0.5f);
@@ -512,7 +519,8 @@ static void present_video(void)
         g_frame[i + SEEDLESS_SCREEN_W * SEEDLESS_SCREEN_H] = g_bottom[i];
     }
 
-    draw_stylus_cursor(g_frame, g_stylus_touching);
+    if (g_cursor_from_stick)
+        draw_stylus_cursor(g_frame, g_stylus_touching);
 
     video_cb(g_frame, SEEDLESS_SCREEN_W, SEEDLESS_FB_H,
              SEEDLESS_SCREEN_W * sizeof(uint32_t));
