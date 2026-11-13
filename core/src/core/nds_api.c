@@ -208,7 +208,13 @@ int nds_state_load(nds_t *nds, int slot)
     (void)nds;
     frontend_t *g = FRONTEND;
     g->lid_closed = 0;
-    g->state_load_delay = 0;
+    /* A state is normally loaded right after the frontend started the game,
+     * while the emulation thread is still booting. Apply it at a frame
+     * boundary a few frames later, instead of asking for it mid-initialisation.
+     * The core's own boot-with-state path waits 30 frames; the machine is
+     * fully built by the first frame, and 10 is enough for the boot's initial
+     * DMA to settle. Every frame here is a frame the user waits on a resume. */
+    g->state_load_delay = 10;
     g->state_slot = (uint8_t)slot;
     g->state_load_request = 1;
     recon_drs_reset();

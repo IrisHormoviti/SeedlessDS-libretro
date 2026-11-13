@@ -16,6 +16,7 @@
 
 #include "seedlessds/nds.h"
 #include "seedlessds/platform.h"
+#include "frontend/frontend.h"
 
 /* Internal core symbols (not in public headers). */
 void recon_present_set_mode(unsigned mode);
@@ -713,8 +714,14 @@ bool retro_serialize(void *data, size_t size)
     unlink(path);
     nds_state_save(g_nds, 0);
 
-    for (waited = 0; waited < 500; waited++) {
+    /* The slot file is produced by the core's frame thread and then written
+     * by its own save thread. Wait for both: reading while the writer is still
+     * running leaves the frontend free to destroy the machine under it, and
+     * the save is what a suspend exits on. */
+    for (waited = 0; waited < 1000; waited++) {
         usleep(10000);
+        if (nds_state_saving(g_nds) != 0)
+            continue;
         f = fopen(path, "rb");
         if (!f)
             continue;
@@ -740,6 +747,7 @@ bool retro_unserialize(const void *data, size_t size)
     char path[4096];
     char dir[4096];
     FILE *f;
+    int waited;
 
     if (!g_nds || !data || size == 0)
         return false;
@@ -756,6 +764,15 @@ bool retro_unserialize(const void *data, size_t size)
     }
     fclose(f);
     nds_state_load(g_nds, 0);
+    /* The emulation thread applies the request. Do not tell the frontend the
+     * load is done until it has, so the window can stay hidden (and the
+     * resume card on screen) while the state is decompressed and the machine
+     * jumps to it. A timeout keeps a broken state from hanging startup. */
+    for (waited = 0; waited < 1000; waited++) {
+        if (*(volatile uint8_t *)&FRONTEND->state_load_request == 0)
+            break;
+        usleep(10000);
+    }
     log_cb(RETRO_LOG_INFO, CORE_NAME ": loaded %zu bytes of state\n", size);
     return true;
 }
