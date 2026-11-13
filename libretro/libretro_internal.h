@@ -19,6 +19,11 @@ size_t seedless_audio_read(int16_t *out, size_t max_frames);
 size_t seedless_audio_frames_available(void);
 void seedless_audio_mark_consumed(size_t frames);
 
+/* Frontend microphone → core mic ring */
+void seedless_mic_feed(const int16_t *samples, size_t count);
+void seedless_mic_reset(void);
+void seedless_mic_service(void);
+
 void seedless_compat_init(void);
 
 #ifdef __cplusplus

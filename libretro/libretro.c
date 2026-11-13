@@ -558,6 +558,47 @@ static void present_audio(void)
     }
 }
 
+static struct retro_microphone_interface g_mic;
+static retro_microphone_t *g_mic_handle;
+static int16_t g_mic_buf[2048];
+
+static void open_microphone(void)
+{
+    struct retro_microphone_params params;
+
+    memset(&g_mic, 0, sizeof g_mic);
+    g_mic.interface_version = RETRO_MICROPHONE_INTERFACE_VERSION;
+    if (!environ_cb ||
+        !environ_cb(RETRO_ENVIRONMENT_GET_MICROPHONE_INTERFACE, &g_mic))
+        return;
+    if (g_mic.interface_version < 1 || !g_mic.open_mic)
+        return;
+    memset(&params, 0, sizeof params);
+    params.rate = SEEDLESS_AUDIO_RATE;
+    g_mic_handle = g_mic.open_mic(&params);
+    if (g_mic_handle && g_mic.set_mic_state)
+        g_mic.set_mic_state(g_mic_handle, true);
+}
+
+static void close_microphone(void)
+{
+    if (g_mic_handle && g_mic.close_mic)
+        g_mic.close_mic(g_mic_handle);
+    g_mic_handle = NULL;
+}
+
+static void pump_microphone(void)
+{
+    int n;
+
+    if (!g_mic_handle || !g_mic.read_mic)
+        return;
+    n = g_mic.read_mic(g_mic_handle, g_mic_buf,
+                       sizeof g_mic_buf / sizeof g_mic_buf[0]);
+    if (n > 0)
+        seedless_mic_feed(g_mic_buf, (size_t)n);
+}
+
 /* ---- libretro API ---- */
 
 void retro_set_environment(retro_environment_t cb)
@@ -588,6 +629,8 @@ void retro_init(void)
 {
     seedless_compat_init();
     seedless_audio_reset();
+    seedless_mic_reset();
+    open_microphone();
     set_seedless_root();
     g_nds = NULL;
     g_emu_running = 0;
@@ -665,6 +708,8 @@ void retro_run(void)
 
     present_video();
     present_audio();
+    pump_microphone();
+    seedless_mic_service();
 }
 
 size_t retro_serialize_size(void)
@@ -964,6 +1009,8 @@ bool retro_load_game_special(unsigned game_type,
 
 void retro_unload_game(void)
 {
+    close_microphone();
+    seedless_mic_reset();
     if (!g_nds)
         return;
 

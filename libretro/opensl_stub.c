@@ -132,6 +132,84 @@ void seedless_audio_mark_consumed(size_t frames)
 
 typedef struct sl_obj sl_obj_t;
 
+/* Captured samples, tagged with the buffer the core handed to enqueue.
+ * audio.c ping-pongs PLATFORM_AUDIO->mic_buffers through the recorder queue:
+ * each frame it reads mic_buffers[mic_slot] and re-enqueues that pointer, so
+ * the recorder must write the live PCM into whichever pointer it was given,
+ * then report the buffer as ready via the callback. A shared ring that the
+ * core never reads would leave mic_buffers[] silent. */
+#define MIC_RING_FRAMES 22050
+static int16_t g_mic_ring[MIC_RING_FRAMES];
+static size_t g_mic_r, g_mic_w;
+static pthread_mutex_t g_mic_mu = PTHREAD_MUTEX_INITIALIZER;
+static sl_bq_cb g_mic_cb;
+static void *g_mic_cb_ctx;
+static int g_mic_recording;
+static uint8_t *g_mic_sink;      /* buffer the core is waiting to receive */
+static uint32_t g_mic_sink_bytes;
+
+void seedless_mic_reset(void)
+{
+    pthread_mutex_lock(&g_mic_mu);
+    g_mic_r = g_mic_w = 0;
+    g_mic_sink = NULL;
+    g_mic_sink_bytes = 0;
+    pthread_mutex_unlock(&g_mic_mu);
+}
+
+void seedless_mic_feed(const int16_t *samples, size_t count)
+{
+    size_t i;
+
+    if (!samples || !count)
+        return;
+    pthread_mutex_lock(&g_mic_mu);
+    for (i = 0; i < count; i++) {
+        g_mic_ring[g_mic_w] = samples[i];
+        g_mic_w = (g_mic_w + 1) % MIC_RING_FRAMES;
+        if (g_mic_w == g_mic_r)
+            g_mic_r = (g_mic_r + 1) % MIC_RING_FRAMES;
+    }
+    pthread_mutex_unlock(&g_mic_mu);
+}
+
+/* Fill the buffer the core enqueued from the captured ring, then report it
+ * ready. Runs from the frontend frame, never reentrant with the core's own
+ * enqueue, so mic_capture_queue_callback's mic_total accounting stays sane. */
+void seedless_mic_service(void)
+{
+    uint8_t *sink;
+    uint32_t bytes;
+    int16_t *out;
+    size_t samples, i;
+    sl_bq_cb cb;
+    void *ctx;
+
+    pthread_mutex_lock(&g_mic_mu);
+    sink = g_mic_sink;
+    bytes = g_mic_sink_bytes;
+    g_mic_sink = NULL;
+    g_mic_sink_bytes = 0;
+    cb = g_mic_cb;
+    ctx = g_mic_cb_ctx;
+    if (sink && bytes) {
+        out = (int16_t *)sink;
+        samples = bytes / 2;
+        for (i = 0; i < samples; i++) {
+            if (g_mic_r != g_mic_w) {
+                out[i] = g_mic_ring[g_mic_r];
+                g_mic_r = (g_mic_r + 1) % MIC_RING_FRAMES;
+            } else {
+                out[i] = 0;
+            }
+        }
+    }
+    pthread_mutex_unlock(&g_mic_mu);
+
+    if (sink && bytes && g_mic_recording && cb)
+        cb(ctx, NULL);
+}
+
 struct sl_obj {
     const void *const *vptr; /* MUST be first: COM/Itf vtable pointer */
     sl_bq_cb callback;
@@ -142,6 +220,7 @@ struct sl_obj {
     sl_obj_t *play_itf;
     sl_obj_t *bq_itf;
     sl_obj_t *vol_itf;
+    sl_obj_t *record_itf;
 };
 
 static sl_obj_t g_engine;
@@ -268,18 +347,100 @@ static const void *const obj_vtbl[] = {
     (const void *)obj_get_interface,
 };
 
+static SLresult record_set_state(void *self, SLuint32 state)
+{
+    (void)self;
+    g_mic_recording = state != 0;
+    return 0;
+}
+
+static SLresult record_get_state(void *self, SLuint32 *state)
+{
+    (void)self;
+    if (state)
+        *state = g_mic_recording ? 1u : 0u;
+    return 0;
+}
+
+static const void *const record_vtbl[] = {
+    (const void *)record_set_state,
+    (const void *)record_get_state,
+    (const void *)sl_ok,
+    (const void *)sl_ok,
+};
+
+static SLresult mic_bq_enqueue(void *self, const void *buffer, SLuint32 size)
+{
+    (void)self;
+    if (buffer && size) {
+        pthread_mutex_lock(&g_mic_mu);
+        g_mic_sink = (uint8_t *)buffer;
+        g_mic_sink_bytes = size;
+        pthread_mutex_unlock(&g_mic_mu);
+    }
+    return 0;
+}
+
+static SLresult mic_bq_clear(void *self)
+{
+    (void)self;
+    return 0;
+}
+
+static SLresult mic_bq_get_state(void *self, void *state)
+{
+    (void)self;
+    (void)state;
+    return 0;
+}
+
+static SLresult mic_bq_register_callback(void *self, void *cb, void *ctx)
+{
+    (void)self;
+    g_mic_cb = (sl_bq_cb)cb;
+    g_mic_cb_ctx = ctx;
+    return 0;
+}
+
+static const void *const mic_bq_vtbl[] = {
+    (const void *)mic_bq_enqueue,
+    (const void *)mic_bq_clear,
+    (const void *)mic_bq_get_state,
+    (const void *)mic_bq_register_callback,
+};
+
+static sl_obj_t *g_recorder;
+static sl_obj_t *g_record_itf;
+static sl_obj_t *g_recorder_queue;
+
 static SLresult engine_create_audio_recorder(void *self, void *pRec, void *a,
                                              void *b, SLuint32 n, void *ids,
                                              void *req)
 {
     (void)self;
-    (void)pRec;
     (void)a;
     (void)b;
     (void)n;
     (void)ids;
     (void)req;
-    return -1;
+
+    if (!g_recorder) {
+        g_recorder = sl_new(obj_vtbl);
+        g_record_itf = sl_new(record_vtbl);
+        g_recorder_queue = sl_new(mic_bq_vtbl);
+        if (!g_recorder || !g_record_itf || !g_recorder_queue)
+            return -1;
+        g_recorder->record_itf = g_record_itf;
+        g_recorder->bq_itf = g_recorder_queue;
+    }
+    if (pRec)
+        *(void **)pRec = g_recorder;
+
+    /* Fallback path for audio.c's sound_disabled sweep; the primary feed goes
+     * through the buffer queue above. */
+    PLATFORM_AUDIO->mic_samples = g_mic_ring;
+    PLATFORM_AUDIO->mic_sample_index = 0;
+    return 0;
 }
 
 static const void *const engine_itf_vtbl[] = {
@@ -364,8 +525,12 @@ static SLresult obj_get_interface(void *self, SLInterfaceID iid, void *out)
         *(void **)out = o->vol_itf ? o->vol_itf : g_engine.vol_itf;
         return 0;
     }
-    if (iid == SL_IID_RECORD)
-        return -1;
+    if (iid == SL_IID_RECORD) {
+        if (!o->record_itf)
+            return -1;
+        *(void **)out = o->record_itf;
+        return 0;
+    }
     return -1;
 }
 
