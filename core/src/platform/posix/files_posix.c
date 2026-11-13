@@ -77,8 +77,16 @@ void *files_jni_call_static_method_build_result(const char *arg0, const char *ar
 
 uint32_t files_jni_env_invoke_and_release(const char *arg0, const char *arg1)
 {
-    (void)arg0; (void)arg1;
-    return 0;
+    /* The DraStic state writer finishes by renaming the temporary file
+     * through the Java-style files shim. The POSIX platform left this as a
+     * no-op, so <rom>_0.dss was never created and libretro savestates could
+     * not complete. Actually rename it; resolve() keeps absolute paths and
+     * handles the DATA_* prefixes used by other callers. */
+    char src[1024];
+    char dst[1024];
+    resolve(src, sizeof src, arg0);
+    resolve(dst, sizeof dst, arg1);
+    return rename(src, dst) == 0 ? 0 : 1;
 }
 
 uint32_t files_jni_env_invoke_alternate(void *arg)
