@@ -187,6 +187,15 @@ static SLresult bq_enqueue(void *self, const void *buffer, SLuint32 size)
     (void)self;
     /* Only capture PCM. queued is owned by feed_frame / mark_consumed
      * (real OpenSL decrements via RegisterCallback after the buffer plays). */
+    /* A state load stops playback and then restarts it, and the restart
+     * primes the queue with silent buffers before it clears `closed`. With a
+     * real AudioTrack those buffers keep the device fed; here they would be
+     * consumed as the first audio after the resume, delaying the restored
+     * game's PCM by up to the core's whole queue (about half a second for a
+     * large buffer mode). The ring was already cleared when playback
+     * stopped, so drop them instead. */
+    if (PLATFORM_AUDIO->closed != 0)
+        return 0;
     if (buffer && size)
         ring_write_bytes(buffer, size);
     return 0;
