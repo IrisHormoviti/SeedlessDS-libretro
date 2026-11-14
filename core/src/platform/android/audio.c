@@ -126,15 +126,15 @@ void platform_audio_output_feed_frame(spu_t *spu)
             uint32_t n = count & 0x7fffffffu;
             if (n != 0) {
 
-                float gain = audio_out_volume;
                 unsigned char *source  = (unsigned char *)au->mix;
                 unsigned char *dest = spu->mic_buffer;
                 for (uint32_t i = 0; i < n; i++) {
                     int16_t sample = rd16s(source + (size_t)i * 2);
-                    float normalized = (float)sample * (1.0f / 32768.0f);
-                    float mag = normalized * (gain * normalized);
-                    float with_sign = (sample < 0) ? -(mag * 32768.0f) : (mag * 32768.0f);
-                    int32_t v = (int32_t)with_sign;
+                    /* Linear mic input. The original applied the square of the
+                     * signal, so everything below full scale was crushed to near
+                     * silence and only a shout ever registered. A fixed boost
+                     * keeps the mic independent of the volume level. */
+                    int32_t v = (int32_t)((float)sample * 2.0f);
                     if (v > 32767)  v = 32767;
                     if (v < -32767) v = -32767;
                     wr16(dest + (size_t)i * 2, (int16_t)v);
