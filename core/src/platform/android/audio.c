@@ -130,11 +130,12 @@ void platform_audio_output_feed_frame(spu_t *spu)
                 unsigned char *dest = spu->mic_buffer;
                 for (uint32_t i = 0; i < n; i++) {
                     int16_t sample = rd16s(source + (size_t)i * 2);
-                    /* Linear mic input. The original applied the square of the
-                     * signal, so everything below full scale was crushed to near
-                     * silence and only a shout ever registered. A fixed boost
-                     * keeps the mic independent of the volume level. */
-                    int32_t v = (int32_t)((float)sample * 2.0f);
+                    /* Linear mic input with a fixed boost. The original applied
+                     * the square of the signal, so everything below full scale
+                     * was crushed to near silence and only a shout registered.
+                     * The DS microphone games want a hot signal, so amplify
+                     * rather than square. */
+                    int32_t v = (int32_t)((float)sample * 8.0f);
                     if (v > 32767)  v = 32767;
                     if (v < -32767) v = -32767;
                     wr16(dest + (size_t)i * 2, (int16_t)v);
