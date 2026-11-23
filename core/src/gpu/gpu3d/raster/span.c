@@ -129,9 +129,13 @@ static inline int32_t sbfx32(uint32_t val, unsigned lsb, unsigned width)
 }
 #define SCRATCH_SZ 0x7450u
 
-void gpu3d_raster_span_edge_ramp_dispatch(uint8_t *param_1, const gpu3d_polygon_t *param_2,
+#ifdef SEEDLESS_GLES_COMPUTE
+#include "compute.h"
+#endif
+
+static void native_edges(uint8_t *param_1, const gpu3d_polygon_t *param_2,
                          const gpu3d_bank_vertex_t *param_3,
-                         uint32_t param_4, uint32_t param_5)
+                         uint32_t param_4, uint32_t param_5, int collect)
 {
 
     unsigned char scratch[SCRATCH_SZ];
@@ -346,6 +350,12 @@ void gpu3d_raster_span_edge_ramp_dispatch(uint8_t *param_1, const gpu3d_polygon_
         }
     }
 
+#ifdef SEEDLESS_GLES_COMPUTE
+    if (collect) {
+        compute_rows(tail_x1, param_4 + tail_w4, tail_w5, tail_w6, local_b8[0]);
+        return;
+    }
+#endif
     gpu3d_raster_bands_group_runs(tail_x0, (unsigned char *)tail_x1, param_2,
                         scratch + 0x840u,
                         (int)tail_w4, (int)tail_w5, tail_w6,
@@ -425,6 +435,13 @@ flow_timing:
 
         uint32_t colorOut = gpu3d_geometry_color_expand_bgr555_to_rgb8(colorIn);
 
+#ifdef SEEDLESS_GLES_COMPUTE
+        if (collect) {
+            compute_rect(w21t, param_4 + w22t, w24t, w20t, (int32_t)w27t,
+                         (int32_t)w25v, w19v, colorOut);
+            return;
+        }
+#endif
         uint32_t mulv = w20t * w24t;
 
         if (mulv < 0x201u) {
@@ -452,6 +469,20 @@ epilogue:
 }
 #undef OFF_NIBBLE_TABLE
 #undef SCRATCH_SZ
+
+void gpu3d_raster_span_edge_ramp_dispatch(uint8_t *ctx, const gpu3d_polygon_t *p,
+        const gpu3d_bank_vertex_t *v, uint32_t y0, uint32_t y1)
+{
+    native_edges(ctx, p, v, y0, y1, 0);
+}
+
+#ifdef SEEDLESS_GLES_COMPUTE
+void gpu3d_compute_collect_edges(uint8_t *ctx, const gpu3d_polygon_t *p,
+        const gpu3d_bank_vertex_t *v, uint32_t y0, uint32_t y1)
+{
+    native_edges(ctx, p, v, y0, y1, 1);
+}
+#endif
 
 static inline int neighbor_is_foreign(uint32_t field, uint32_t curval, uint32_t idcur)
 {

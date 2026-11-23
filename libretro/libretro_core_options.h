@@ -37,6 +37,16 @@ struct retro_core_option_v2_category option_cats_us[] = {
 };
 
 struct retro_core_option_v2_definition option_defs_us[] = {
+#ifdef SEEDLESS_GLES_COMPUTE
+   {
+      "seedlessds_renderer", "3D Renderer (Restart)", NULL,
+      "Compute uses OpenGL ES 3.1 for supported native-resolution scenes. Compare renders both paths and logs the first pixel difference.",
+      NULL, "video",
+      { { "software", "Software" }, { "compute", "GLES compute" },
+        { "verify", "Compare compute with software" }, { NULL, NULL } },
+      "software"
+   },
+#endif
    {
       "seedlessds_frameskip_type",
       "Frameskip Type",

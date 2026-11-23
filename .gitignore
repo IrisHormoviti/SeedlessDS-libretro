@@ -17,3 +17,5 @@
 *.dll
 compile_commands.json
 core/third_party/downloads/
+
+/RENDERER-HANDOFF.md

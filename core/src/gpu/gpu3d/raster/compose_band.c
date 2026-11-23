@@ -63,11 +63,11 @@ void gpu3d_raster_band_compose_plain(unsigned char *machine, unsigned char *dest
              GPU3D_BAND(machine)->plane0 + 15u * GPU3D_BAND_ROW_BYTES, 1024);
 }
 
-void gpu3d_raster_band_flush_plain(gpu_t *machine) {
+void gpu3d_raster_band_flush_plain_to(gpu_t *machine, uint8_t *dst) {
 
     gpu_t *gpu = machine;
     uint32_t width = gpu->raster.clear_depth_word;
-    unsigned char *out = gpu->raster.frame_front;
+    unsigned char *out = dst;
 
     unsigned char *table = (unsigned char *)((gpu3d_band_header_t *)(gpu->band_context[0] + GPU3D_BAND_HEADER_OFFSET))->gpu3d->edge_color_expanded[0];
 
@@ -85,6 +85,10 @@ void gpu3d_raster_band_flush_plain(gpu_t *machine) {
         gpu3d_raster_test_neighbor_edge_dual(scratch, A + 0x400, A + 0x800, A + 0xc00, width);
         gpu3d_raster_palette_blit_256(out + 16u * GPU3D_BAND_ROW_BYTES + g * 16u * GPU3D_BAND_ROW_BYTES, t + 0x400, scratch, table);
     }
+}
+
+void gpu3d_raster_band_flush_plain(gpu_t *machine) {
+    gpu3d_raster_band_flush_plain_to(machine, machine->raster.frame_front);
 }
 
 void gpu3d_raster_pixel_alpha_blend_256(uint32_t *param_1, const uint32_t *param_2,
@@ -196,7 +200,7 @@ void gpu3d_raster_band_compose_fogged(unsigned char *machine, unsigned char *des
              layer, 1024);
 }
 
-void gpu3d_raster_band_flush_fogged(gpu_t *machine) {
+void gpu3d_raster_band_flush_fogged_to(gpu_t *machine, uint8_t *dst) {
 
     gpu_t *gpu = machine;
     gpu3d_t *ctx = ((gpu3d_band_header_t *)(gpu->band_context[0] + GPU3D_BAND_HEADER_OFFSET))->gpu3d;
@@ -217,7 +221,7 @@ void gpu3d_raster_band_flush_fogged(gpu_t *machine) {
 
     uint32_t field = *(uint32_t *)cfg;
     uint32_t width = cfg->clear_depth_word;
-    unsigned char *output = cfg->frame_front + 16u * GPU3D_BAND_ROW_BYTES;
+    unsigned char *output = dst + 16u * GPU3D_BAND_ROW_BYTES;
 
     uint32_t shift = (field >> 8) & 0xf;
     uint32_t height = (ctx->fog_offset & 0x7fff) + (0x400u >> shift);
@@ -243,6 +247,10 @@ void gpu3d_raster_band_flush_fogged(gpu_t *machine) {
         output += 0x4000;
         layer   += 0x800;
     }
+}
+
+void gpu3d_raster_band_flush_fogged(gpu_t *machine) {
+    gpu3d_raster_band_flush_fogged_to(machine, machine->raster.frame_front);
 }
 
 

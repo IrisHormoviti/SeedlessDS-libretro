@@ -8,6 +8,9 @@
 #include <stddef.h>
 #include "../../gpu.h"
 #include "raster.h"
+#ifdef SEEDLESS_GLES_COMPUTE
+#include "compute.h"
+#endif
 #include "seedlessds/platform.h"
 #include "core_internals.h"
 #include "mem_access.h"
@@ -82,6 +85,9 @@ void gpu3d_raster_frame_dispatch(gpu_t *gpu, uint32_t mode) {
         gpu3d_raster_band_bucket_classify(
             g3, gpu->bucket[1], b, com, 1);
 
+#ifdef SEEDLESS_GLES_COMPUTE
+        if (compute_frame(gpu, g3, which, dest)) return;
+#endif
         g = (unsigned char *)gpu->vram.config;
         uint32_t batch = *(uint32_t *)(g + 1180);
         boss_hdr->pass = (uint8_t)batch;
@@ -131,6 +137,9 @@ void gpu3d_raster_frame_dispatch(gpu_t *gpu, uint32_t mode) {
             else if (k == 2) gpu3d_raster_band_flush_fogged(gpu);
             else             gpu3d_raster_band_compose_set_alpha(gpu);
         }
+#ifdef SEEDLESS_GLES_COMPUTE
+        compute_check(dest);
+#endif
         return;
     }
 

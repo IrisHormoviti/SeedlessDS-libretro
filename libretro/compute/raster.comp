@@ -1,0 +1,113 @@
+#version 310 es
+precision highp int;
+layout(local_size_x=8, local_size_y=8) in;
+
+// Four SSBOs fit the ES 3.1 minimum. Each lane owns a pixel throughout
+// the draw list, so depth and colour stay in registers and need no atomics.
+struct Span {
+    uint xWidth, z, dz, fraction;
+    uint red, green, blue, coef;
+    uint uv, duv, textureBase, paletteBase;
+    uint texParam, attr, flags, reserved;
+};
+layout(std430,binding=0) readonly buffer Spans { Span spans[]; };
+layout(std430,binding=1) readonly buffer Rows { uint offsets[]; };
+layout(std430,binding=2) readonly buffer Arena { uint data[]; };
+layout(std430,binding=3) writeonly buffer Output { uint pixels[]; };
+uniform uint clearColor, clearDepth, alphaRef, effects, coefBase;
+
+int lo(uint v) { return bitfieldExtract(int(v), 0, 16); }
+int hi(uint v) { return int(v) >> 16; }
+uint shade(uint pair, int f) {
+    return ((uint(lo(pair)) * 32768u + uint(hi(pair) * f)) >> 18u) & 255u;
+}
+int coord(int start, int delta, int f) {
+    return (start * 32768 + (delta > 0 ? 1024 : 0) + delta * f) >> 19;
+}
+int wrapCoord(int v, int size, uint mode) {
+    if ((mode & 1u) == 0u) return clamp(v, 0, size - 1);
+    if ((mode & 4u) != 0u && (v & size) != 0) v = ~v;
+    return v & (size - 1);
+}
+void main() {
+    uvec2 xy = gl_GlobalInvocationID.xy;
+    uint depth = clearDepth & 0xffffffu;
+    uint attributes = clearDepth & 0x3f000000u;
+    bool fogDrawn = false;
+    uint color = clearColor;
+    uint bin = xy.y*8u + xy.x/32u;
+    for (uint i = offsets[bin]; i < offsets[bin+1u]; ++i) {
+        Span s = spans[offsets[i]];
+        uint dx = xy.x - (s.xWidth & 65535u);
+        if (dx >= (s.xWidth >> 16)) continue;
+        int f;
+        if ((s.flags & 1u) != 0u) {
+            uint pair = data[coefBase + s.coef + dx/2u];
+            f = (dx & 1u) == 0u ? lo(pair) : hi(pair);
+        } else {
+            f = int((s.coef * dx) >> 16);
+        }
+        uint high, low;
+        umulExtended(s.fraction, dx, high, low);
+        uint z = s.z + s.dz * dx + ((high << 2) | (low >> 30));
+        if ((s.flags & 2u) != 0u) {
+            int h, l;
+            imulExtended(int(s.dz), f, h, l);
+            z = s.z + ((uint(h) << 17) | (uint(l) >> 15));
+        }
+        if ((s.attr & 16384u) != 0u ? abs(int(depth) - int(z)) >= 256 : z >= depth)
+            continue;
+        uvec3 c = uvec3(shade(s.red,f), shade(s.green,f), shade(s.blue,f));
+        uint a = (s.attr >> 16) & 31u;
+        bool toon = (s.attr & 48u) == 32u;
+        bool highlight = toon && (s.flags & 32u) != 0u;
+        uvec3 table = uvec3(0u);
+        if (toon) {
+            table = (uvec3(data[min(c.r >> 1,31u)]) >> uvec3(0,8,16)) & 255u;
+            if (!highlight) c = table;
+            else if (s.textureBase != 0xffffffffu) c = c.rrr;
+        }
+        if (s.textureBase != 0xffffffffu) {
+            int w = 8 << int((s.texParam >> 20) & 7u);
+            int h = 8 << int((s.texParam >> 23) & 7u);
+            ivec2 uv;
+            if ((s.flags & 4u) != 0u) uv = ivec2(lo(s.uv)+int(dx),hi(s.uv));
+            else uv = ivec2(coord(lo(s.uv),lo(s.duv),f),coord(hi(s.uv),hi(s.duv),f));
+            uint mode = s.texParam >> 16;
+            uint addr = uint(wrapCoord(uv.y,h,mode>>1)*w + wrapCoord(uv.x,w,mode));
+            uint texel;
+            if (s.paletteBase == 0xffffffffu) texel = data[s.textureBase + addr];
+            else {
+                uint packedIndices = data[s.textureBase + addr/4u];
+                texel = data[s.paletteBase + ((packedIndices >> ((addr & 3u)*8u)) & 255u)];
+            }
+            uvec3 t = (uvec3(texel) >> uvec3(0,8,16)) & 255u;
+            uint ta = texel >> 24;
+            if ((s.attr & 48u) == 16u) {
+                uint k = ta == 31u ? 32u : ta;
+                c = (c * (ta == 0u ? 32u : 31u-ta) + t*k) >> 5;
+            } else {
+                c = (c*t + c + t) >> 6;
+                a = (a*ta + a + ta) >> 5;
+            }
+        }
+        if (highlight) c = min(c + table,uvec3(63u));
+        if (a <= alphaRef) continue;
+        bool fog = (s.attr & 32768u) != 0u;
+        uint fogBit = fog ? 0x80000000u : 0u;
+        fogDrawn = fogDrawn || fog;
+        depth = z & 0xffffffu;
+        attributes = s.attr & 0x3f000000u;
+        if ((s.flags & 4u) != 0u) attributes |= (s.attr << 15) & 0x40000000u;
+        else if ((s.flags & 64u) != 0u) {
+            uint left = (s.reserved >> 8) & 511u, right = (s.reserved >> 17) & 511u;
+            if (dx < left || dx+right >= (s.xWidth >> 16)) attributes |= 0x40000000u;
+        }
+        color = c.r | (c.g << 8) | (c.b << 16) | (a << 24) | fogBit;
+    }
+    uint index = xy.y*256u + xy.x;
+    if (effects != 0u) {
+        pixels[index] = color;
+        pixels[49152u + index] = depth | attributes | (fogDrawn ? 0x80000000u : 0u);
+    } else pixels[index] = color & 0x1fffffffu;
+}

@@ -350,6 +350,11 @@ void gpu3d_raster_band_compose_fog_alpha(unsigned char *machine, unsigned char *
 void gpu3d_raster_band_compose_fogged(unsigned char *machine, unsigned char *dest, uint32_t row);
 void gpu3d_raster_band_compose_block_pairs(gpu_t *machine);
 void gpu3d_raster_band_compose_plain(unsigned char *machine, unsigned char *dest, uint32_t row);
+void gpu3d_raster_native_translucent_band(uint8_t *machine, unsigned idx);
+void gpu3d_raster_finish_native_band(unsigned char *machine, unsigned char *frame, unsigned idx, unsigned pass);
+void gpu3d_raster_band_flush_plain_to(gpu_t *machine, uint8_t *dst);
+void gpu3d_raster_band_flush_fogged_to(gpu_t *machine, uint8_t *dst);
+void gpu3d_raster_band_compose_set_alpha_to(gpu_t *machine, uint8_t *dst);
 void gpu3d_raster_band_compose_set_alpha(gpu_t *machine);
 void gpu3d_raster_band_compose_scaled_fogged(void *param_1, void *param_2, uint32_t param_3);
 void gpu3d_raster_band_compose_scaled_plain(void *param_1, void *param_2, uint32_t param_3);

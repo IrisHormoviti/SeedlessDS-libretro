@@ -13,6 +13,9 @@
 #include <libretro.h>
 #include "libretro_internal.h"
 #include "libretro_core_options.h"
+#ifdef SEEDLESS_GLES_COMPUTE
+#include "compute.h"
+#endif
 
 #include "seedlessds/nds.h"
 #include "seedlessds/platform.h"
@@ -977,9 +980,17 @@ bool retro_load_game(const struct retro_game_info *info)
     g_stylus_y = (float)(SEEDLESS_SCREEN_H / 2);
     g_stylus_touching = 0;
 
+#ifdef SEEDLESS_GLES_COMPUTE
+    const char *renderer = opt_value("seedlessds_renderer", "software");
+    if (!strcmp(renderer, "compute") || !strcmp(renderer, "verify"))
+        compute_start(!strcmp(renderer, "verify"));
+#endif
     g_emu_running = 1;
     g_emu_started = 0;
     if (pthread_create(&g_emu_thread, NULL, emu_thread_main, NULL) != 0) {
+#ifdef SEEDLESS_GLES_COMPUTE
+        compute_stop();
+#endif
         nds_destroy(g_nds);
         g_nds = NULL;
         g_emu_running = 0;
@@ -1020,6 +1031,9 @@ void retro_unload_game(void)
     if (g_emu_running || g_emu_started)
         pthread_join(g_emu_thread, NULL);
     nds_destroy(g_nds);
+#ifdef SEEDLESS_GLES_COMPUTE
+    compute_stop();
+#endif
     g_nds = NULL;
     g_emu_running = 0;
     g_emu_started = 0;

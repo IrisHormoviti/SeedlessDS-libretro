@@ -155,5 +155,13 @@ if(NOT APPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/link.T")
         -Wl,-Bsymbolic)
 endif()
 
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    set(SEEDLESS_GLES_COMPUTE AUTO CACHE STRING "Build the GLES 3.1 rasterizer (AUTO, ON, OFF)")
+    set_property(CACHE SEEDLESS_GLES_COMPUTE PROPERTY STRINGS AUTO ON OFF)
+    if(SEEDLESS_GLES_COMPUTE)
+        add_subdirectory(libretro/compute)
+    endif()
+endif()
+
 install(TARGETS seedlessds_libretro LIBRARY DESTINATION lib/libretro)
 install(FILES seedlessds_libretro.info DESTINATION share/libretro/info OPTIONAL)

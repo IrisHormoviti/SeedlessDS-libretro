@@ -1784,7 +1784,7 @@ void gpu3d_raster_band_line_priority_mark_swapped(unsigned char *dst,
     dst[i] = (unsigned char)w11;
 }
 
-void gpu3d_raster_band_compose_set_alpha(gpu_t *machine) {
+void gpu3d_raster_band_compose_set_alpha_to(gpu_t *machine, uint8_t *dst) {
 
     gpu_t *gpu = machine;
     gpu3d_t *ctx = ((gpu3d_band_header_t *)(gpu->band_context[0] + GPU3D_BAND_HEADER_OFFSET))->gpu3d;
@@ -1805,7 +1805,7 @@ void gpu3d_raster_band_compose_set_alpha(gpu_t *machine) {
 
     uint32_t field = cfg->disp3dcnt;
     uint32_t width = cfg->clear_depth_word;
-    unsigned char *output = cfg->frame_front + 16u * GPU3D_BAND_ROW_BYTES;
+    unsigned char *output = dst + 16u * GPU3D_BAND_ROW_BYTES;
 
     uint32_t shift = (field >> 8) & 0xf;
     uint32_t height = (ctx->fog_offset & 0x7fff) + (0x400u >> shift);
@@ -1833,6 +1833,50 @@ void gpu3d_raster_band_compose_set_alpha(gpu_t *machine) {
     }
 }
 
+void gpu3d_raster_band_compose_set_alpha(gpu_t *machine) {
+    gpu3d_raster_band_compose_set_alpha_to(machine, machine->raster.frame_front);
+}
+
+void gpu3d_raster_finish_native_band(unsigned char *machine, unsigned char *frame,
+                                    unsigned idx, unsigned pass)
+{
+    gpu3d_band_header_t *cfg = (gpu3d_band_header_t *)(machine + GPU3D_BAND_HEADER_OFFSET);
+    uint32_t state = cfg->gpu->raster.disp3dcnt;
+    uint32_t height = (pass == 0) ? ((state >> 3) & 4) : 0;
+    uint32_t sel = (height & ~3u) | ((state >> 6) & 3);
+    uint32_t k = sel - 2;
+
+    if (k > 5) {
+        gpu3d_raster_words_copy_mask29((uint32_t *)frame, (const uint32_t *)machine);
+    } else {
+        static const uint8_t dest[6] = { 0, 1, 2, 2, 3, 4 };
+        switch (dest[k]) {
+        case 0: gpu3d_raster_fog_apply_frame(machine, frame); break;
+        case 1: gpu3d_raster_page_compose_fog_alpha(machine, frame); break;
+        case 2: gpu3d_raster_band_compose_plain(
+                    machine, frame, idx); break;
+        case 3: gpu3d_raster_band_compose_fogged(
+                    machine, frame, idx); break;
+        default: gpu3d_raster_band_compose_fog_alpha(
+                    machine, frame, idx); break;
+        }
+    }
+}
+
+void gpu3d_raster_native_translucent_band(uint8_t *machine, unsigned idx)
+{
+    gpu3d_band_header_t *cfg = (gpu3d_band_header_t *)(machine + GPU3D_BAND_HEADER_OFFSET);
+    gpu3d_t *scene = cfg->gpu3d;
+    unsigned bank = scene->bank ^ 1u;
+    gpu3d_band_bucket_t *bucket = &cfg->gpu->bucket[1][idx];
+    if (!bucket->count) return;
+    gpu3d_raster_byte_fill(GPU3D_BAND(machine)->plane2, 255, 16*256);
+    const uint16_t *ids = (const uint16_t *)bucket->list;
+    for (unsigned i = 0; i < bucket->count; i++)
+        gpu3d_raster_span_edge_ramp_dispatch(machine, &scene->translucent[bank].polygon[ids[i]],
+                scene->vertex_bank[bank].vertex, idx*16, (idx+1)*16);
+}
+
 void gpu3d_raster_band_draw_dispatch(unsigned char *machine) {
 
     gpu3d_band_header_t *cfg = (gpu3d_band_header_t *)(machine + GPU3D_BAND_HEADER_OFFSET);
@@ -1846,13 +1890,8 @@ void gpu3d_raster_band_draw_dispatch(unsigned char *machine) {
     gpu3d_bank_vertex_t *desc2 = b->vertex_bank[which].vertex;
     uint32_t *cnt2 = &b->translucent[which].count;
 
-    unsigned char *bufs[16];
-    for (int k = 0; k < 16; k++) bufs[k] = GPU3D_BAND(machine)->plane2 + k * 0x100;
-
-    gpu3d_raster_t *mark = &a->raster;
     unsigned char *rows = a->raster.frame_front;
     gpu3d_band_bucket_t *list1 = a->bucket[0];
-    gpu3d_band_bucket_t *list2 = a->bucket[1];
 
     uint32_t strips = 12u / row_height;
 
@@ -1874,40 +1913,11 @@ void gpu3d_raster_band_draw_dispatch(unsigned char *machine) {
                       desc2, y0, y1);
         }
 
-        if (*cnt2 != 0) {
-            for (int k = 0; k < 16; k++) gpu3d_raster_byte_fill(bufs[k], 255, 256);
+        if (*cnt2 != 0)
+            gpu3d_raster_native_translucent_band(machine, idx);
 
-            uint32_t *n2 = &list2[idx].count;
-            if (*n2 != 0) {
-                const uint16_t *l =
-                    (const uint16_t *)list2[idx].list;
-                for (uint64_t i = 0; i < *n2; i++)
-                    gpu3d_raster_span_edge_ramp_dispatch(machine, &b->translucent[which].polygon[l[i]],
-                          desc2, y0, y1);
-            }
-        }
-
-        uint32_t state = mark->disp3dcnt;
-        uint32_t height = (cfg->pass == 0) ? ((state >> 3) & 4) : 0;
-        uint32_t sel = (height & ~3u) | ((state >> 6) & 3);
-        uint32_t k = sel - 2;
-        unsigned char *frame = rows + (uint64_t)(uint32_t)(idx << 12) * 4;
-
-        if (k > 5) {
-            gpu3d_raster_words_copy_mask29((uint32_t *)frame, (const uint32_t *)machine);
-        } else {
-            static const uint8_t dest[6] = { 0, 1, 2, 2, 3, 4 };
-            switch (dest[k]) {
-            case 0: gpu3d_raster_fog_apply_frame(machine, frame); break;
-            case 1: gpu3d_raster_page_compose_fog_alpha(machine, frame); break;
-            case 2: gpu3d_raster_band_compose_plain(
-                        machine, frame, idx); break;
-            case 3: gpu3d_raster_band_compose_fogged(
-                        machine, frame, idx); break;
-            default: gpu3d_raster_band_compose_fog_alpha(
-                        machine, frame, idx); break;
-            }
-        }
+        gpu3d_raster_finish_native_band(machine, rows + idx * 16u * GPU3D_BAND_ROW_BYTES,
+                                      idx, cfg->pass);
 
         f++;
         if (f >= strips) return;
