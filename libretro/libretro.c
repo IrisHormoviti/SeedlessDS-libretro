@@ -62,8 +62,6 @@ static int g_cursor_from_stick;
 #define STYLUS_SPEED_PX 4.5f
 
 static uint32_t g_frame[SEEDLESS_SCREEN_W * SEEDLESS_FB_H];
-static uint32_t g_top[SEEDLESS_SCREEN_W * SEEDLESS_SCREEN_H];
-static uint32_t g_bottom[SEEDLESS_SCREEN_W * SEEDLESS_SCREEN_H];
 static int16_t g_audio_tmp[SEEDLESS_AUDIO_RATE]; /* stereo frames * 2 */
 
 static void log_fallback(enum retro_log_level level, const char *fmt, ...)
@@ -508,20 +506,17 @@ static void poll_touch(nds_input_t *input)
 
 static void present_video(void)
 {
-    unsigned i;
+    const size_t screen_pixels = SEEDLESS_SCREEN_W * SEEDLESS_SCREEN_H;
+    uint32_t *top_dst = g_frame;
+    uint32_t *bottom_dst = g_frame + screen_pixels;
 
-    if (!nds_screens_rgba(g_nds, g_top, g_bottom)) {
+    if (!nds_screens_rgba(g_nds, top_dst, bottom_dst)) {
         const void *top = NULL, *bottom = NULL;
         nds_screen_buffers(g_nds, &top, &bottom);
         if (!top || !bottom)
             return;
-        memcpy(g_top, top, sizeof g_top);
-        memcpy(g_bottom, bottom, sizeof g_bottom);
-    }
-
-    for (i = 0; i < SEEDLESS_SCREEN_W * SEEDLESS_SCREEN_H; i++) {
-        g_frame[i] = g_top[i];
-        g_frame[i + SEEDLESS_SCREEN_W * SEEDLESS_SCREEN_H] = g_bottom[i];
+        memcpy(top_dst, top, screen_pixels * sizeof *top_dst);
+        memcpy(bottom_dst, bottom, screen_pixels * sizeof *bottom_dst);
     }
 
     if (g_cursor_from_stick)

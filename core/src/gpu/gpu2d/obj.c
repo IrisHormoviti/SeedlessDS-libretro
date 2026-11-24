@@ -13,6 +13,20 @@
 
 
 
+#if defined(__aarch64__) && defined(__ARM_NEON)
+#include <arm_neon.h>
+
+/* Turn a byte comparison into one bit per pixel, in scanline order. */
+static inline void store_obj_mask(uint8_t *dst, uint8x16_t selected)
+{
+    const uint8x16_t weights = { 1,2,4,8,16,32,64,128, 1,2,4,8,16,32,64,128 };
+    uint16x8_t pairs = vpaddlq_u8(vandq_u8(selected, weights));
+    uint64x2_t halves = vpaddlq_u32(vpaddlq_u16(pairs));
+    dst[0] = (uint8_t)vgetq_lane_u64(halves, 0);
+    dst[1] = (uint8_t)vgetq_lane_u64(halves, 1);
+}
+#endif
+
 static uint32_t rev32(uint32_t v)
 {
     return (v >> 24) | ((v >> 8) & 0xff00u) | ((v << 8) & 0xff0000u) | (v << 24);
@@ -93,6 +107,7 @@ uint32_t gpu2d_obj_draw_line(gpu2d_engine_t *ctx, uint8_t *px, uint8_t *atr,
                 base = (row >> 3) * step + ((row << 2) & 0x1cu);
                 for (j = 0; j < width; j += 8) {
                     w0 = rd32(dat + base + (size_t)j * 4);
+                    if (!w0) continue;
                     for (b = 0; b < 8; b++) {
                         unsigned ix = (w0 >> (4 * b)) & 0xfu;
                         if (ix) {
@@ -113,6 +128,7 @@ uint32_t gpu2d_obj_draw_line(gpu2d_engine_t *ctx, uint8_t *px, uint8_t *atr,
                 for (j = 0; j < width; j += 8) {
                     uint32_t t = rd32(p);
                     p -= 32;
+                    if (!t) continue;
                     t = rev32(((t << 4) & 0xf0f0f0f0u) | ((t >> 4) & 0x0f0f0f0fu));
                     for (b = 0; b < 8; b++) {
                         unsigned ix = (t >> (4 * b)) & 0xfu;
@@ -270,12 +286,17 @@ uint32_t gpu2d_obj_draw_line(gpu2d_engine_t *ctx, uint8_t *px, uint8_t *atr,
             }
         }
 
+#if defined(__aarch64__) && defined(__ARM_NEON)
+        for (i = 0; i < 256; i += 16)
+            store_obj_mask(msk + i/8, vtstq_u8(vld1q_u8(padded+i), vdupq_n_u8(255)));
+#else
         for (i = 0; i < 32; i++) {
             unsigned bt = 0;
             for (b = 0; b < 8; b++)
                 if (padded[i * 8 + b]) bt |= 1u << b;
             msk[i] = (uint8_t)bt;
         }
+#endif
         ret = 16;
 
         if (layer == 0) break;
@@ -284,6 +305,15 @@ uint32_t gpu2d_obj_draw_line(gpu2d_engine_t *ctx, uint8_t *px, uint8_t *atr,
     if (ctx->line_mode[line] == 0) {
         for (i = 0; i < 32; i++) { m_bits05[i] = 0; m_bit7[i] = 0; }
     } else {
+#if defined(__aarch64__) && defined(__ARM_NEON)
+        const uint8x16_t low = vdupq_n_u8(0x3f), high = vdupq_n_u8(0x80);
+        for (i = 0; i < 256; i += 16) {
+            uint8x16_t attr = vld1q_u8(atr+i);
+            store_obj_mask(m_bits05+i/8, vtstq_u8(attr, low));
+            store_obj_mask(m_bit7+i/8, vtstq_u8(attr, high));
+            vst1q_u8(atr+i, vandq_u8(attr, low));
+        }
+#else
         for (i = 0; i < 32; i++) {
             unsigned a05 = 0, a7 = 0;
             for (b = 0; b < 8; b++) {
@@ -295,6 +325,7 @@ uint32_t gpu2d_obj_draw_line(gpu2d_engine_t *ctx, uint8_t *px, uint8_t *atr,
             m_bits05[i] = (uint8_t)a05;
             m_bit7[i]   = (uint8_t)a7;
         }
+#endif
     }
 
     return ret;
