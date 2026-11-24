@@ -29,6 +29,13 @@ uint64_t jit_block_lookup_secondary[2][ARM_BLOCK_LOOKUP]
     __attribute__((visibility("hidden"), aligned(64), used));
 
 static void *jit_block_lookup_cached(void *ctx, uint32_t pc);
+
+/* Fold page and instruction-mode bits into the compact dispatcher cache index.
+ * The guest PC tag is still stored and compared in full by the fast path. */
+static inline uint32_t jit_dispatch_cache_index(uint32_t pc)
+{
+    return (pc ^ (pc >> 10) ^ (pc >> 20)) & (ARM_BLOCK_LOOKUP - 1u);
+}
 static void flush_cache_range(const uint8_t *first, const uint8_t *last);
 static uint64_t jit_native_mapping_signature(const nds_t *nds);
 static uint64_t jit_native_hash_u64(uint64_t hash, uint64_t value);
@@ -1448,7 +1455,7 @@ void jit_warm_cache_save(void)
 void jit_block_lookup_invalidate(void *ctx, uint32_t dir)
 {
     arm_t *cpu = CPU(ctx);
-    uint32_t slot = (dir >> 2) & (ARM_BLOCK_LOOKUP - 1u);
+    uint32_t slot = jit_dispatch_cache_index(dir);
     cpu->block_lookup[slot] = 0;
     jit_block_lookup_secondary[cpu->is_arm9 != 0][slot] = 0;
 }
@@ -2423,7 +2430,7 @@ void *jit_cache_lookup_or_compile(void *ctx, uint32_t dir)
     uint8_t *c = (uint8_t *)ctx;
     jit_arena_t *ar = CPU(c)->jit_arena;
     uint8_t *b = (uint8_t *)ar;
-    uint32_t i13 = (dir >> 2) & 0x3ff;
+    uint32_t i13 = jit_dispatch_cache_index(dir);
     uint32_t i21 = (dir >> 2) & 0x1fff;
     uint32_t i20 = (dir >> 1) & 0x3fff;
     uint32_t pair = dir & 1;

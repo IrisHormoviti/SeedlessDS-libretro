@@ -948,7 +948,11 @@ __asm__(
 "    br x1                                     \n"
 "jit_dispatch_block_cache:\n"
 /* Keep the slot in w4 while x1 holds the primary entry address. */
-"    ubfx w4, w0, #2, #10                      \n"
+/* Match jit_dispatch_cache_index(): fold mode, page, and region bits while
+ * preserving the fixed 1024-slot arm_t table and full-PC tag check. */
+"    eor w4, w0, w0, lsr #10                   \n"
+"    eor w4, w4, w0, lsr #20                   \n"
+"    and w4, w4, #0x3ff                        \n"
 "    add x1, x28, w4, uxtw #3                  \n"
 "    ldr x2, [x1, #0x80]                       \n"
 "    sub w3, w2, w0                            \n"
