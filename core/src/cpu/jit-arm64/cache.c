@@ -19,13 +19,15 @@ uint64_t jit_block_lookup_secondary[2][ARM_BLOCK_LOOKUP]
     __attribute__((visibility("hidden"), aligned(64)));
 
 #define JIT_WARM_CACHE_MAGIC 0x574a5344u
-#define JIT_WARM_CACHE_VERSION 1u
+#define JIT_WARM_CACHE_VERSION 2u
 #define JIT_WARM_CACHE_MAX_ENTRIES 256u
 #define JIT_WARM_CACHE_PREWARM_ENTRIES 64u
+#define JIT_WARM_CACHE_SIGNATURE_HALFWORDS 4u
 
 typedef struct jit_warm_cache_entry {
     uint32_t pc;
     uint32_t cpu;
+    uint32_t signature;
 } jit_warm_cache_entry_t;
 
 typedef struct jit_warm_cache_header {
@@ -39,8 +41,9 @@ typedef struct jit_warm_cache_header {
 } jit_warm_cache_header_t;
 
 static jit_warm_cache_entry_t jit_warm_cache_entries[JIT_WARM_CACHE_MAX_ENTRIES];
+static jit_warm_cache_entry_t jit_warm_cache_preload_entries[JIT_WARM_CACHE_PREWARM_ENTRIES];
 static uint32_t jit_warm_cache_count;
-static uint32_t jit_warm_cache_loaded_count;
+static uint32_t jit_warm_cache_preload_count;
 static uint32_t jit_warm_cache_game_code;
 static uint32_t jit_warm_cache_rom_size;
 static uint32_t jit_warm_cache_header_crc;
@@ -51,8 +54,25 @@ void jit_warm_cache_clear(void)
 {
     jit_warm_cache_enabled = 0;
     jit_warm_cache_count = 0;
-    jit_warm_cache_loaded_count = 0;
+    jit_warm_cache_preload_count = 0;
     jit_warm_cache_path[0] = 0;
+}
+
+static uint32_t jit_warm_cache_signature(void *ctx, uint32_t pc)
+{
+    pagetable_t *table = PT(ctx);
+    uint32_t address = pc & ~1u;
+    uint32_t signature = 2166136261u;
+    for (uint32_t i = 0; i < JIT_WARM_CACHE_SIGNATURE_HALFWORDS; i++) {
+        uint32_t at = address + i * 2u;
+        uint64_t base = table->page[at >> PAGETABLE_PAGE_SHIFT] << 2;
+        uint16_t halfword = base
+            ? *(const uint16_t *)(uintptr_t)(base + at)
+            : (uint16_t)bus_read16((unsigned char *)table, at);
+        signature = (signature ^ (uint8_t)halfword) * 16777619u;
+        signature = (signature ^ (uint8_t)(halfword >> 8)) * 16777619u;
+    }
+    return signature;
 }
 
 static uint32_t jit_warm_cache_entries_crc(const jit_warm_cache_entry_t *entries,
@@ -119,7 +139,12 @@ void jit_warm_cache_begin(unsigned char *machine)
             jit_warm_cache_entries[valid_count++] = entry;
         }
         jit_warm_cache_count = valid_count;
-        jit_warm_cache_loaded_count = valid_count;
+        jit_warm_cache_preload_count = valid_count;
+        if (jit_warm_cache_preload_count > JIT_WARM_CACHE_PREWARM_ENTRIES)
+            jit_warm_cache_preload_count = JIT_WARM_CACHE_PREWARM_ENTRIES;
+        for (uint32_t i = 0; i < jit_warm_cache_preload_count; i++)
+            jit_warm_cache_preload_entries[i] =
+                jit_warm_cache_entries[valid_count - i - 1];
     }
     close_file(file);
 }
@@ -130,30 +155,48 @@ void jit_warm_cache_preload(unsigned char *machine, int allow)
         ((nds_t *)machine)->runtime.jit_enabled == 0)
         return;
 
-    uint32_t count = jit_warm_cache_loaded_count;
-    if (count > JIT_WARM_CACHE_PREWARM_ENTRIES)
-        count = JIT_WARM_CACHE_PREWARM_ENTRIES;
-    for (uint32_t i = 0; i < count; i++) {
-        jit_warm_cache_entry_t *entry = &jit_warm_cache_entries[i];
+    for (uint32_t i = 0; i < jit_warm_cache_preload_count; i++) {
+        jit_warm_cache_entry_t *entry = &jit_warm_cache_preload_entries[i];
         arm_t *cpu = entry->cpu ? &((nds_t *)machine)->arm9 :
                                   &((nds_t *)machine)->arm7;
+        if (entry->signature == 0 ||
+            jit_warm_cache_signature(cpu, entry->pc) != entry->signature ||
+            jit_block_lookup(cpu, entry->pc) != NULL)
+            continue;
         (void)jit_cache_lookup_or_compile(cpu, entry->pc);
     }
 }
 
 void jit_warm_cache_record(void *ctx, uint32_t pc)
 {
-    if (!jit_warm_cache_enabled ||
-        jit_warm_cache_count >= JIT_WARM_CACHE_MAX_ENTRIES)
+    if (!jit_warm_cache_enabled)
+        return;
+
+    uint32_t signature = jit_warm_cache_signature(ctx, pc);
+    if (!signature)
         return;
 
     uint32_t cpu = CPU(ctx)->is_arm9 != 0;
-    for (uint32_t i = 0; i < jit_warm_cache_count; i++)
+    uint32_t index = jit_warm_cache_count;
+    for (uint32_t i = 0; i < jit_warm_cache_count; i++) {
         if (jit_warm_cache_entries[i].pc == pc &&
-            jit_warm_cache_entries[i].cpu == cpu)
-            return;
+            jit_warm_cache_entries[i].cpu == cpu) {
+            index = i;
+            break;
+        }
+    }
+    if (index < jit_warm_cache_count) {
+        memmove(&jit_warm_cache_entries[index],
+                &jit_warm_cache_entries[index + 1],
+                (jit_warm_cache_count - index - 1) * sizeof(jit_warm_cache_entries[0]));
+        jit_warm_cache_count--;
+    } else if (jit_warm_cache_count == JIT_WARM_CACHE_MAX_ENTRIES) {
+        memmove(&jit_warm_cache_entries[0], &jit_warm_cache_entries[1],
+                (JIT_WARM_CACHE_MAX_ENTRIES - 1) * sizeof(jit_warm_cache_entries[0]));
+        jit_warm_cache_count--;
+    }
     jit_warm_cache_entries[jit_warm_cache_count++] =
-        (jit_warm_cache_entry_t){ pc, cpu };
+        (jit_warm_cache_entry_t){ pc, cpu, signature };
 }
 
 void jit_warm_cache_save(void)
