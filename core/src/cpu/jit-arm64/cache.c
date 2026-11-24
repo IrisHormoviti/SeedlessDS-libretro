@@ -45,7 +45,10 @@ static uint64_t jit_native_hash_u64(uint64_t hash, uint64_t value);
 #endif
 #define JIT_NATIVE_CACHE_MAX_BLOCKS 0x8000u
 #define JIT_NATIVE_CACHE_MAX_DEPENDENCIES 0x20000u
-#define JIT_NATIVE_CACHE_MAX_BLOCK_DEPENDENCIES 16u
+/* The serialized per-block dependency count is one byte. Allow its full range
+ * so one complex block cannot disable snapshots for the entire session. The
+ * 64 compile frames reserve about 128 KiB for these temporary ranges. */
+#define JIT_NATIVE_CACHE_MAX_BLOCK_DEPENDENCIES 255u
 #define JIT_NATIVE_CACHE_COMPILE_DEPTH 64u
 
 typedef struct jit_warm_cache_entry {
@@ -150,6 +153,7 @@ static uint32_t jit_native_cache_dependency_count;
 static uint32_t jit_native_compile_depth;
 static uint32_t jit_native_compile_overflow_depth;
 static uint8_t jit_native_cache_complete;
+static uint8_t jit_native_cache_block_dependency_overflow;
 static uint64_t jit_native_cache_initial_mapping_signature;
 #if defined(SEEDLESS_JIT_PROFILE)
 extern void seedless_libretro_native_cache_report(const char *status,
@@ -183,6 +187,7 @@ void jit_warm_cache_clear(void)
     jit_native_compile_depth = 0;
     jit_native_compile_overflow_depth = 0;
     jit_native_cache_complete = 0;
+    jit_native_cache_block_dependency_overflow = 0;
     jit_native_cache_initial_mapping_signature = 0;
 #if defined(SEEDLESS_JIT_PROFILE)
     jit_warm_profile_loaded = 0;
@@ -376,6 +381,7 @@ void jit_native_cache_note_range(void *ctx, uint32_t address, uint32_t size)
             return;
     }
     if (frame->dependency_count == JIT_NATIVE_CACHE_MAX_BLOCK_DEPENDENCIES) {
+        jit_native_cache_block_dependency_overflow = 1;
         jit_native_cache_complete = 0;
         return;
     }
@@ -970,7 +976,9 @@ static void jit_native_cache_save(nds_t *nds)
         return;
     }
     if (!jit_native_cache_complete) {
-        JIT_NATIVE_CACHE_REPORT("native-cache-incomplete", 0, nds);
+        JIT_NATIVE_CACHE_REPORT(jit_native_cache_block_dependency_overflow
+            ? "block-dependency-limit-exceeded" : "native-cache-incomplete",
+            0, nds);
         return;
     }
     if (jit_native_cache_block_count == 0 ||

@@ -136,8 +136,8 @@ Savestate loads continue to use their own memory-aware warm path.
 The core does not scan or compile the whole ROM before first play, so cold
 launch remains lazy. With `SEEDLESS_JIT_PROFILE` enabled, ROM replay reports
 how many native blocks were restored, and shutdown logs why a native snapshot
-was saved or skipped (including cache completeness, mapping, ITCM, and file I/O
-checks).
+was saved or skipped (including cache completeness, per-block dependency-limit,
+mapping, ITCM, and file I/O checks).
 
 BananaLinux builds BananaDS at `e54aaa8e2693352ad9f33a0d3d75ea4b887f1957`
 with a patched melonDS core. Build that source as a separate baseline so its JIT,
