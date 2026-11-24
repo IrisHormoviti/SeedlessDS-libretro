@@ -159,19 +159,41 @@ target_link_libraries(seedlessds_libretro PRIVATE
     dl
 )
 
-# Match BananaDS's opt-in LTO build for constrained AArch64 targets. Keep this
-# disabled by default because some cross toolchains do not ship compatible
-# plugin-aware archivers and linkers.
-option(SEEDLESS_ENABLE_IPO "Enable interprocedural optimization for the core" OFF)
+# Match BananaDS's LTO build on constrained AArch64 targets when the toolchain
+# exposes its compiler-aware archivers. Keep generic and incomplete wrappers
+# on the normal build path unless IPO is explicitly requested.
+set(SEEDLESS_IPO_DEFAULT OFF)
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$" OR
+   CMAKE_C_COMPILER_TARGET MATCHES "aarch64")
+    if(CMAKE_C_COMPILER_AR AND NOT CMAKE_C_COMPILER_AR MATCHES "NOTFOUND" AND
+       CMAKE_CXX_COMPILER_AR AND NOT CMAKE_CXX_COMPILER_AR MATCHES "NOTFOUND")
+        set(SEEDLESS_IPO_DEFAULT ON)
+    endif()
+endif()
+set(SEEDLESS_IPO_AUTO_DEFAULT OFF)
+if(NOT DEFINED SEEDLESS_ENABLE_IPO)
+    set(SEEDLESS_IPO_AUTO_DEFAULT ON)
+endif()
+option(SEEDLESS_ENABLE_IPO "Enable interprocedural optimization for the core"
+       ${SEEDLESS_IPO_DEFAULT})
+set(SEEDLESS_IPO_ACTIVE OFF)
 if(SEEDLESS_ENABLE_IPO)
     include(CheckIPOSupported)
     check_ipo_supported(RESULT SEEDLESS_IPO_SUPPORTED
         OUTPUT SEEDLESS_IPO_ERROR
         LANGUAGES C CXX)
     if(NOT SEEDLESS_IPO_SUPPORTED)
-        message(FATAL_ERROR "IPO is unavailable: ${SEEDLESS_IPO_ERROR}")
+        if(SEEDLESS_IPO_AUTO_DEFAULT)
+            message(WARNING "IPO auto-detection failed; using the normal build: ${SEEDLESS_IPO_ERROR}")
+        else()
+            message(FATAL_ERROR "IPO is unavailable: ${SEEDLESS_IPO_ERROR}")
+        endif()
+    else()
+        set(SEEDLESS_IPO_ACTIVE ON)
     endif()
+endif()
 
+if(SEEDLESS_IPO_ACTIVE)
     set_property(TARGET recon_fn seedlessds_libretro
         PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
     foreach(target IN ITEMS seedless_lua seedless_unrar seedless_lzma zlibstatic zlib)
@@ -187,41 +209,59 @@ if(NOT APPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/link.T")
         -Wl,-Bsymbolic)
 endif()
 
-# Tune AArch64 builds for the RG DS Plus's Cortex-A55 by default without
-# raising the baseline instruction set. The cache option remains overridable.
-set(SEEDLESS_ARM_TUNE_DEFAULT "")
+# Optimize AArch64 builds for the RG DS Plus's Cortex-A55 by default. BananaDS
+# uses -mcpu=cortex-a55 on these handhelds; keep the target overridable for
+# other boards and fall back to tuning-only if the compiler lacks that CPU.
+set(SEEDLESS_ARM_CPU_DEFAULT "")
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$" OR
    CMAKE_C_COMPILER_TARGET MATCHES "aarch64")
-    set(SEEDLESS_ARM_TUNE_DEFAULT "cortex-a55")
+    set(SEEDLESS_ARM_CPU_DEFAULT "cortex-a55")
 endif()
-set(SEEDLESS_ARM_TUNE "${SEEDLESS_ARM_TUNE_DEFAULT}" CACHE STRING
-    "AArch64 CPU tuning target (defaults to cortex-a55 on AArch64)")
-if(SEEDLESS_ARM_TUNE)
+set(SEEDLESS_ARM_CPU "${SEEDLESS_ARM_CPU_DEFAULT}" CACHE STRING
+    "AArch64 CPU target (defaults to cortex-a55 on AArch64; empty disables CPU tuning)")
+if(SEEDLESS_ARM_CPU)
     include(CheckCCompilerFlag)
-    if(SEEDLESS_ARM_TUNE STREQUAL "cortex-a55")
-        set(SEEDLESS_TUNE_CHECK_VAR SEEDLESS_TUNE_cortex_a55_HYPHEN)
-    elseif(SEEDLESS_ARM_TUNE STREQUAL "cortex_a55")
-        set(SEEDLESS_TUNE_CHECK_VAR SEEDLESS_TUNE_cortex_a55_UNDERSCORE)
-    else()
-        string(MAKE_C_IDENTIFIER "${SEEDLESS_ARM_TUNE}" SEEDLESS_TUNE_ID)
-        set(SEEDLESS_TUNE_CHECK_VAR "SEEDLESS_TUNE_${SEEDLESS_TUNE_ID}")
-    endif()
-    check_c_compiler_flag("-mtune=${SEEDLESS_ARM_TUNE}" "${SEEDLESS_TUNE_CHECK_VAR}")
-    # Zig's AArch64 CPU names use underscores; GCC/Clang use hyphens.
-    if(NOT ${SEEDLESS_TUNE_CHECK_VAR} AND SEEDLESS_ARM_TUNE STREQUAL "cortex-a55")
-        check_c_compiler_flag("-mtune=cortex_a55" SEEDLESS_TUNE_cortex_a55_UNDERSCORE)
-        if(SEEDLESS_TUNE_cortex_a55_UNDERSCORE)
-            set(SEEDLESS_ARM_TUNE "cortex_a55" CACHE STRING
-                "AArch64 CPU tuning target (defaults to cortex-a55 on AArch64)" FORCE)
-            set(SEEDLESS_TUNE_CHECK_VAR SEEDLESS_TUNE_cortex_a55_UNDERSCORE)
+    include(CheckCXXCompilerFlag)
+    string(MAKE_C_IDENTIFIER "${SEEDLESS_ARM_CPU}" SEEDLESS_CPU_ID)
+    set(SEEDLESS_CPU_C_CHECK "SEEDLESS_CPU_${SEEDLESS_CPU_ID}_C")
+    set(SEEDLESS_CPU_CXX_CHECK "SEEDLESS_CPU_${SEEDLESS_CPU_ID}_CXX")
+    check_c_compiler_flag("-mcpu=${SEEDLESS_ARM_CPU}" "${SEEDLESS_CPU_C_CHECK}")
+    check_cxx_compiler_flag("-mcpu=${SEEDLESS_ARM_CPU}" "${SEEDLESS_CPU_CXX_CHECK}")
+
+    if(NOT ${SEEDLESS_CPU_C_CHECK} OR NOT ${SEEDLESS_CPU_CXX_CHECK})
+        if(SEEDLESS_ARM_CPU STREQUAL "cortex-a55")
+            check_c_compiler_flag("-mcpu=cortex_a55" SEEDLESS_CPU_cortex_a55_UNDERSCORE_C)
+            check_cxx_compiler_flag("-mcpu=cortex_a55" SEEDLESS_CPU_cortex_a55_UNDERSCORE_CXX)
+            if(SEEDLESS_CPU_cortex_a55_UNDERSCORE_C AND
+               SEEDLESS_CPU_cortex_a55_UNDERSCORE_CXX)
+                set(SEEDLESS_ARM_CPU "cortex_a55")
+                set(SEEDLESS_CPU_C_CHECK SEEDLESS_CPU_cortex_a55_UNDERSCORE_C)
+                set(SEEDLESS_CPU_CXX_CHECK SEEDLESS_CPU_cortex_a55_UNDERSCORE_CXX)
+            endif()
         endif()
     endif()
-    if(NOT ${SEEDLESS_TUNE_CHECK_VAR})
-        message(FATAL_ERROR "Unsupported ARM tuning: ${SEEDLESS_ARM_TUNE}")
+
+    if(${SEEDLESS_CPU_C_CHECK} AND ${SEEDLESS_CPU_CXX_CHECK})
+        set(SEEDLESS_ARM_CPU_FLAG "-mcpu=${SEEDLESS_ARM_CPU}")
+    else()
+        set(SEEDLESS_CPU_TUNE_C_CHECK "SEEDLESS_CPU_${SEEDLESS_CPU_ID}_TUNE_C")
+        set(SEEDLESS_CPU_TUNE_CXX_CHECK "SEEDLESS_CPU_${SEEDLESS_CPU_ID}_TUNE_CXX")
+        check_c_compiler_flag("-mtune=${SEEDLESS_ARM_CPU}" "${SEEDLESS_CPU_TUNE_C_CHECK}")
+        check_cxx_compiler_flag("-mtune=${SEEDLESS_ARM_CPU}" "${SEEDLESS_CPU_TUNE_CXX_CHECK}")
+        if(NOT ${SEEDLESS_CPU_TUNE_C_CHECK} OR NOT ${SEEDLESS_CPU_TUNE_CXX_CHECK})
+            message(FATAL_ERROR "Unsupported AArch64 CPU target: ${SEEDLESS_ARM_CPU}")
+        endif()
+        message(WARNING "Compiler lacks -mcpu=${SEEDLESS_ARM_CPU}; using -mtune instead")
+        set(SEEDLESS_ARM_CPU_FLAG "-mtune=${SEEDLESS_ARM_CPU}")
     endif()
-    foreach(target IN ITEMS recon_fn seedlessds_libretro)
+
+    foreach(target IN ITEMS recon_fn seedlessds_libretro
+            seedless_lua seedless_unrar seedless_lzma zlibstatic zlib)
+        if(NOT TARGET ${target})
+            continue()
+        endif()
         target_compile_options(${target} PRIVATE
-            "$<$<COMPILE_LANGUAGE:C,CXX>:-mtune=${SEEDLESS_ARM_TUNE}>")
+            "$<$<COMPILE_LANGUAGE:C,CXX>:${SEEDLESS_ARM_CPU_FLAG}>")
     endforeach()
 endif()
 

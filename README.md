@@ -53,14 +53,15 @@ An x86_64 build is possible with `SEEDLESS_ALLOW_NON_AARCH64` (JIT stubs), but i
 
 ### RG DS / RG DS Plus performance
 
-New AArch64 builds default to Cortex-A55 tuning without raising the required
-instruction set; pass `-DSEEDLESS_ARM_TUNE=` to disable it. For AArch64 Linux,
-configure a Release build with `-DSEEDLESS_ENABLE_IPO=ON` to test link-time
-optimization.
-Zig uses `cortex_a55` for the tuning value. Build a second copy with the same
-toolchain and tuning and `-DSEEDLESS_ENABLE_IPO=OFF` to isolate the effect of LTO.
-The cross-toolchain needs an LTO-capable linker and archive tools, such as
-`gcc-ar` and `gcc-ranlib` with GCC.
+New AArch64 builds default to `-mcpu=cortex-a55`, `-O2`, and link-time
+optimization when CMake detects compiler-aware C and C++ archivers and confirms
+IPO support. This matches BananaDS's CPU targeting and LTO setup for these
+handhelds. Pass `-DSEEDLESS_ARM_CPU=` or `-DSEEDLESS_ENABLE_IPO=OFF` to disable
+the corresponding target optimization; pass `-DSEEDLESS_ENABLE_IPO=ON` to
+require LTO. If a compiler accepts only tuning, SeedlessDS falls back to
+`-mtune=cortex-a55`; incomplete cross-toolchain wrappers stay on the regular
+build path when LTO is selected automatically. Toolchains need an LTO-capable
+linker and archive tools, such as `gcc-ar` and `gcc-ranlib` with GCC.
 
 The libretro frontend converts each DS screen directly into its half of the
 stacked output frame. This removes a 384 KiB copy per delivered frame, following
