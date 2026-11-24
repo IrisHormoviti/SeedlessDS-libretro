@@ -78,7 +78,9 @@ void jit_warm_cache_begin(unsigned char *machine)
     if (!rom || !rom->data || rom->size < CART_HEADER_SIZE)
         return;
 
-    jit_warm_cache_game_code = nds->cart.game_code;
+    /* cart_boot_from_header assigns cart.game_code during reset, after this
+     * cache is opened. Read the same header field directly here. */
+    jit_warm_cache_game_code = rd32(rom->data + 12);
     jit_warm_cache_rom_size = rom->size;
     jit_warm_cache_header_crc = util_crc32_buffer_padded(rom->data, CART_HEADER_SIZE);
     int path_length = snprintf(jit_warm_cache_path, sizeof jit_warm_cache_path,
