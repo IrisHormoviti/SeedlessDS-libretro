@@ -94,6 +94,16 @@ void jit_warm_cache_record(void *ctx, uint32_t pc)
     (void)pc;
 }
 void jit_warm_cache_save(void) {}
+void jit_warm_cache_profile_read(uint64_t *loaded, uint64_t *signature_skips,
+                                 uint64_t *already_compiled, uint64_t *candidates,
+                                 uint64_t *compiled_blocks)
+{
+    if (loaded) *loaded = 0;
+    if (signature_skips) *signature_skips = 0;
+    if (already_compiled) *already_compiled = 0;
+    if (candidates) *candidates = 0;
+    if (compiled_blocks) *compiled_blocks = 0;
+}
 
 void jit_profile_reset(void) {}
 

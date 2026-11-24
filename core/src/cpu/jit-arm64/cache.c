@@ -49,6 +49,14 @@ static uint32_t jit_warm_cache_rom_size;
 static uint32_t jit_warm_cache_header_crc;
 static uint8_t jit_warm_cache_enabled;
 static char jit_warm_cache_path[0x410];
+#if defined(SEEDLESS_JIT_PROFILE)
+static uint64_t jit_warm_profile_loaded;
+static uint64_t jit_warm_profile_signature_skips;
+static uint64_t jit_warm_profile_already_compiled;
+static uint64_t jit_warm_profile_candidates;
+static uint64_t jit_warm_profile_compiled_blocks;
+static uint8_t jit_warm_profile_preloading;
+#endif
 
 void jit_warm_cache_clear(void)
 {
@@ -155,16 +163,54 @@ void jit_warm_cache_preload(unsigned char *machine, int allow)
         ((nds_t *)machine)->runtime.jit_enabled == 0)
         return;
 
+#if defined(SEEDLESS_JIT_PROFILE)
+    jit_warm_profile_loaded = jit_warm_cache_preload_count;
+    jit_warm_profile_preloading = 1;
+#endif
     for (uint32_t i = 0; i < jit_warm_cache_preload_count; i++) {
         jit_warm_cache_entry_t *entry = &jit_warm_cache_preload_entries[i];
         arm_t *cpu = entry->cpu ? &((nds_t *)machine)->arm9 :
                                   &((nds_t *)machine)->arm7;
         if (entry->signature == 0 ||
-            jit_warm_cache_signature(cpu, entry->pc) != entry->signature ||
-            jit_block_lookup(cpu, entry->pc) != NULL)
+            jit_warm_cache_signature(cpu, entry->pc) != entry->signature) {
+#if defined(SEEDLESS_JIT_PROFILE)
+            jit_warm_profile_signature_skips++;
+#endif
             continue;
+        }
+        if (jit_block_lookup(cpu, entry->pc) != NULL) {
+#if defined(SEEDLESS_JIT_PROFILE)
+            jit_warm_profile_already_compiled++;
+#endif
+            continue;
+        }
+#if defined(SEEDLESS_JIT_PROFILE)
+        jit_warm_profile_candidates++;
+#endif
         (void)jit_cache_lookup_or_compile(cpu, entry->pc);
     }
+#if defined(SEEDLESS_JIT_PROFILE)
+    jit_warm_profile_preloading = 0;
+#endif
+}
+
+void jit_warm_cache_profile_read(uint64_t *loaded, uint64_t *signature_skips,
+                                 uint64_t *already_compiled, uint64_t *candidates,
+                                 uint64_t *compiled_blocks)
+{
+#if defined(SEEDLESS_JIT_PROFILE)
+    if (loaded) *loaded = jit_warm_profile_loaded;
+    if (signature_skips) *signature_skips = jit_warm_profile_signature_skips;
+    if (already_compiled) *already_compiled = jit_warm_profile_already_compiled;
+    if (candidates) *candidates = jit_warm_profile_candidates;
+    if (compiled_blocks) *compiled_blocks = jit_warm_profile_compiled_blocks;
+#else
+    if (loaded) *loaded = 0;
+    if (signature_skips) *signature_skips = 0;
+    if (already_compiled) *already_compiled = 0;
+    if (candidates) *candidates = 0;
+    if (compiled_blocks) *compiled_blocks = 0;
+#endif
 }
 
 void jit_warm_cache_record(void *ctx, uint32_t pc)
@@ -1132,6 +1178,12 @@ void jit_profile_reset(void)
     __atomic_store_n(&jit_profile_analysis_us, 0, __ATOMIC_RELAXED);
 #if defined(SEEDLESS_JIT_PROFILE)
     memset(jit_dispatch_profile_counters, 0, sizeof jit_dispatch_profile_counters);
+    jit_warm_profile_loaded = 0;
+    jit_warm_profile_signature_skips = 0;
+    jit_warm_profile_already_compiled = 0;
+    jit_warm_profile_candidates = 0;
+    jit_warm_profile_compiled_blocks = 0;
+    jit_warm_profile_preloading = 0;
 #endif
 }
 
@@ -1236,6 +1288,10 @@ void *jit_cache_lookup_or_compile(void *ctx, uint32_t dir)
     uint32_t noff = (uint32_t)(updated - b);
 
     if (updated) {
+#if defined(SEEDLESS_JIT_PROFILE)
+        if (jit_warm_profile_preloading)
+            jit_warm_profile_compiled_blocks++;
+#endif
         jit_warm_cache_record(ctx, dir);
         if (ent) {
             if (ent->offset == 0) {

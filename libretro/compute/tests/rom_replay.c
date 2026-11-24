@@ -137,6 +137,18 @@ static bool benchmark(const struct retro_game_info *game, uint64_t warmup, uint6
     fprintf(stderr, "Cold-start JIT analysis: %"PRIu64" blocks, %"PRIu64
             " us total (%.2f us/block)\n", boot_blocks, boot_analysis_us,
             boot_blocks ? (double)boot_analysis_us / (double)boot_blocks : 0.0);
+    uint64_t warm_loaded, warm_signature_skips, warm_already_compiled;
+    uint64_t warm_candidates, warm_compiled_blocks;
+    jit_warm_cache_profile_read(&warm_loaded, &warm_signature_skips,
+                                &warm_already_compiled, &warm_candidates,
+                                &warm_compiled_blocks);
+    if (warm_loaded || warm_signature_skips || warm_already_compiled ||
+        warm_candidates || warm_compiled_blocks)
+        fprintf(stderr, "JIT warm-cache prewarm: %"PRIu64" loaded, %"PRIu64
+                " changed-signature skips, %"PRIu64" already compiled, %"PRIu64
+                " candidates, %"PRIu64" blocks compiled\n", warm_loaded,
+                warm_signature_skips, warm_already_compiled, warm_candidates,
+                warm_compiled_blocks);
 #endif
 
     if (warmup && (!nds_control_run_to(1 + warmup) ||
