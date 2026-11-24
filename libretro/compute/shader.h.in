@@ -1,1 +1,4 @@
-static const char raster_shader[] = "@RASTER_SHADER@";
+#define WORKGROUP_X @SEEDLESS_GLES_WORKGROUP_WIDTH@
+#define WORKGROUP_Y @SEEDLESS_GLES_WORKGROUP_HEIGHT@
+
+static const char @shader@_shader[] = "@SHADER_SOURCE@";

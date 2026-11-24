@@ -17,5 +17,5 @@ bool compute_gl_init(void);
 void compute_gl_close(void);
 bool compute_gl_draw(const compute_span *spans, unsigned count,
                      const uint32_t *bins, unsigned bin_words, const uint32_t *arena, unsigned words, unsigned dirty_first, unsigned dirty_end,
-                     const uint32_t *coefficients, unsigned coef_words, uint32_t clear, uint32_t depth, uint32_t alpha, bool effects, void *dst);
+                     const uint32_t *coefficients, unsigned coef_words, uint32_t clear, uint32_t depth, uint32_t alpha, bool effects, bool textured, const uint32_t *edge_colors, void *dst);
 #endif

@@ -1,6 +1,7 @@
 #include "commands.h"
 #include "context.h"
 #include "raster_shader.h"
+#include "edges_shader.h"
 #include <EGL/egl.h>
 #include <GLES3/gl31.h>
 #include <stdio.h>
@@ -19,24 +20,34 @@
     X(BINDBUFFER, BindBuffer) X(BINDBUFFERBASE, BindBufferBase) \
     X(BUFFERDATA, BufferData) X(BUFFERSUBDATA, BufferSubData) \
     X(USEPROGRAM, UseProgram) X(GETUNIFORMLOCATION, GetUniformLocation) \
-    X(UNIFORM1UI, Uniform1ui) X(DISPATCHCOMPUTE, DispatchCompute) \
+    X(UNIFORM1UI, Uniform1ui) X(UNIFORM1UIV, Uniform1uiv) X(DISPATCHCOMPUTE, DispatchCompute) \
     X(MEMORYBARRIER, MemoryBarrier) X(MAPBUFFERRANGE, MapBufferRange) \
     X(UNMAPBUFFER, UnmapBuffer) X(GETERROR, GetError) X(GETSTRING, GetString)
 #define MEMBER(type,name) PFNGL##type##PROC name;
 static struct { FUNCTIONS(MEMBER) } gl;
-static GLuint program, buffers[4];
+typedef struct {
+    GLuint id;
+    GLint clear, depth, alpha, effects, coef;
+} raster_program;
+static raster_program raster[2];
+static GLuint buffers[5];
+static GLuint edge_program;
+static GLint edge_depth, edge_palette;
 static size_t capacity[4];
-static GLint clear_loc, depth_loc, alpha_loc, effects_loc, coef_loc;
 
-static bool init_resources(void)
+static GLuint compile_program(const char *body, bool textured)
 {
-#define LOAD(type,name) gl.name = (PFNGL##type##PROC)eglGetProcAddress("gl" #name); if (!gl.name) return false;
-    FUNCTIONS(LOAD)
-    fprintf(stderr, "[SeedlessDS compute] %s, %s\n", gl.GetString(GL_RENDERER), gl.GetString(GL_VERSION));
     GLuint shader = gl.CreateShader(GL_COMPUTE_SHADER);
-    if (!shader) return false;
-    const char *source = raster_shader;
-    gl.ShaderSource(shader, 1, &source, NULL);
+    if (!shader) return 0;
+    char config[192];
+    snprintf(config, sizeof(config),
+             "#version 310 es\n#define TEXTURED %u\n#define WORKGROUP_X %u\n"
+             "#define WORKGROUP_Y %u\n#define BIN_WIDTH %u\n#define BINS_PER_ROW %u\n"
+             "#define BIN_BASE %u\n",
+             (unsigned)textured, (unsigned)WORKGROUP_X, (unsigned)WORKGROUP_Y,
+             (unsigned)BIN_WIDTH, (unsigned)BINS_PER_ROW, (unsigned)(BIN_COUNT+1));
+    const char *source[] = { config, body };
+    gl.ShaderSource(shader, 2, source, NULL);
     gl.CompileShader(shader);
     GLint ok = 0;
     char log[2048] = {0};
@@ -45,9 +56,9 @@ static bool init_resources(void)
         gl.GetShaderInfoLog(shader, sizeof(log), NULL, log);
         fprintf(stderr, "[SeedlessDS compute] shader compilation failed: %s\n", log);
         gl.DeleteShader(shader);
-        return false;
+        return 0;
     }
-    program = gl.CreateProgram();
+    GLuint program = gl.CreateProgram();
     gl.AttachShader(program, shader);
     gl.LinkProgram(program);
     gl.DeleteShader(shader);
@@ -55,19 +66,46 @@ static bool init_resources(void)
     if (!ok) {
         gl.GetProgramInfoLog(program, sizeof(log), NULL, log);
         fprintf(stderr, "[SeedlessDS compute] program linkage failed: %s\n", log);
-        return false;
+        gl.DeleteProgram(program);
+        return 0;
     }
-    clear_loc = gl.GetUniformLocation(program, "clearColor");
-    depth_loc = gl.GetUniformLocation(program, "clearDepth");
-    alpha_loc = gl.GetUniformLocation(program, "alphaRef");
-    effects_loc = gl.GetUniformLocation(program, "effects");
-    coef_loc = gl.GetUniformLocation(program, "coefBase");
-    gl.GenBuffers(4, buffers);
+    return program;
+}
+
+static bool init_program(raster_program *out, bool textured)
+{
+    GLuint program = compile_program(raster_shader, textured);
+    if (!program) return false;
+    *out = (raster_program){
+        program, gl.GetUniformLocation(program, "clearColor"),
+        gl.GetUniformLocation(program, "clearDepth"),
+        gl.GetUniformLocation(program, "alphaRef"),
+        gl.GetUniformLocation(program, "effects"), gl.GetUniformLocation(program, "coefBase")
+    };
+    return gl.GetError() == GL_NO_ERROR;
+}
+
+static bool init_edges(void)
+{
+    edge_program = compile_program(edges_shader, false);
+    if (!edge_program) return false;
+    edge_depth = gl.GetUniformLocation(edge_program, "clearDepth");
+    edge_palette = gl.GetUniformLocation(edge_program, "edgeColors[0]");
+    gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[4]);
+    gl.BufferData(GL_SHADER_STORAGE_BUFFER, SCREEN_W*SCREEN_H*4, NULL, GL_STREAM_READ);
+    return gl.GetError() == GL_NO_ERROR;
+}
+
+static bool init_resources(void)
+{
+#define LOAD(type,name) gl.name = (PFNGL##type##PROC)eglGetProcAddress("gl" #name); if (!gl.name) return false;
+    FUNCTIONS(LOAD)
+    fprintf(stderr, "[SeedlessDS compute] %s, %s\n", gl.GetString(GL_RENDERER), gl.GetString(GL_VERSION));
+    gl.GenBuffers(5, buffers);
     for (unsigned i = 0; i < 4; i++)
         gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, i, buffers[i]);
     gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[3]);
     gl.BufferData(GL_SHADER_STORAGE_BUFFER, SCREEN_W*SCREEN_H*8, NULL, GL_STREAM_READ);
-    gl.UseProgram(program);
     return gl.GetError() == GL_NO_ERROR;
 }
 
@@ -85,6 +123,8 @@ void compute_gl_close(void)
     /* Destroying the private context owns and frees all of its GL objects. */
     compute_context_close();
     memset(capacity, 0, sizeof(capacity));
+    memset(raster, 0, sizeof(raster));
+    edge_program = 0;
 }
 
 static bool reserve_buffer(unsigned index, size_t bytes)
@@ -109,9 +149,19 @@ static void upload(unsigned index, const void *src, size_t bytes)
 bool compute_gl_draw(const compute_span *spans, unsigned count, const uint32_t *bins, unsigned bin_words,
                      const uint32_t *arena, unsigned words, unsigned dirty_first, unsigned dirty_end,
                      const uint32_t *coefficients, unsigned coef_words, uint32_t clear,
-                     uint32_t depth, uint32_t alpha, bool effects, void *dst)
+                     uint32_t depth, uint32_t alpha, bool effects, bool textured, const uint32_t *edge_colors, void *dst)
 {
     if (!compute_context_bind()) return false;
+    raster_program *program = &raster[textured];
+    if (!program->id && !init_program(program, textured)) {
+        compute_context_release();
+        return false;
+    }
+    if (edge_colors && !edge_program && !init_edges()) {
+        compute_context_release();
+        return false;
+    }
+    gl.UseProgram(program->id);
     upload(0, spans, count*sizeof(*spans));
     upload(1, bins, bin_words*sizeof(*bins));
     if (reserve_buffer(2, (words+coef_words)*sizeof(*arena))) {
@@ -124,16 +174,27 @@ bool compute_gl_draw(const compute_span *spans, unsigned count, const uint32_t *
                          arena+dirty_first);
     if (coef_words)
         gl.BufferSubData(GL_SHADER_STORAGE_BUFFER, words*4, coef_words*4, coefficients);
-    gl.Uniform1ui(coef_loc, words);
-    gl.Uniform1ui(clear_loc, clear);
-    gl.Uniform1ui(depth_loc, depth);
-    gl.Uniform1ui(alpha_loc, alpha);
-    gl.Uniform1ui(effects_loc, effects);
+    gl.Uniform1ui(program->coef, words);
+    gl.Uniform1ui(program->clear, clear);
+    gl.Uniform1ui(program->depth, depth);
+    gl.Uniform1ui(program->alpha, alpha);
+    gl.Uniform1ui(program->effects, effects || edge_colors);
     bool ok = gl.GetError() == GL_NO_ERROR;
     if (ok) {
-        gl.DispatchCompute(SCREEN_W/8, SCREEN_H/8, 1);
+        gl.DispatchCompute(SCREEN_W/WORKGROUP_X, SCREEN_H/WORKGROUP_Y, 1);
+        if (edge_colors) {
+            gl.MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
+            gl.UseProgram(edge_program);
+            gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, buffers[3]);
+            gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, buffers[4]);
+            gl.Uniform1ui(edge_depth, depth);
+            gl.Uniform1uiv(edge_palette, 8, edge_colors);
+            gl.DispatchCompute(SCREEN_W/WORKGROUP_X, SCREEN_H/WORKGROUP_Y, 1);
+            gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, buffers[0]);
+            gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, buffers[1]);
+        }
         gl.MemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
-        gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[3]);
+        gl.BindBuffer(GL_SHADER_STORAGE_BUFFER, buffers[edge_colors ? 4 : 3]);
         size_t bytes = SCREEN_W*SCREEN_H*(effects ? 8 : 4);
         const void *p = gl.MapBufferRange(GL_SHADER_STORAGE_BUFFER, 0, bytes, GL_MAP_READ_BIT);
         ok = p != NULL;

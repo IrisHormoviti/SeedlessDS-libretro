@@ -340,11 +340,19 @@ static SLresult engine_create_audio_player(void *self, void *pPlayer, void *pSrc
                                            void *req);
 static SLresult obj_get_interface(void *self, SLInterfaceID iid, void *out);
 
+static void obj_destroy(void *self)
+{
+    (void)self;
+}
+
 static const void *const obj_vtbl[] = {
     (const void *)obj_realize,
     (const void *)obj_resume,
     (const void *)obj_get_state,
     (const void *)obj_get_interface,
+    NULL, /* RegisterCallback */
+    NULL, /* AbortAsync */
+    (const void *)obj_destroy,
 };
 
 static SLresult record_set_state(void *self, SLuint32 state)

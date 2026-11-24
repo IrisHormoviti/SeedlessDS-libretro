@@ -20,6 +20,7 @@ static nds_control_status_t state;
 static int enabled;
 static int pause_requested;
 static int no_frameskip;
+static int unpaced;
 static long fixed_clock = -1;
 static unsigned compose_threads = ~0u;
 static int capture_fd = -1;
@@ -74,6 +75,7 @@ void nds_control_begin(int64_t clock_seconds, int disable_frameskip, unsigned th
     __atomic_store_n(&fixed_clock, (long)clock_seconds, __ATOMIC_RELEASE);
     __atomic_store_n(&compose_threads, threads, __ATOMIC_RELEASE);
     __atomic_store_n(&no_frameskip, disable_frameskip != 0, __ATOMIC_RELEASE);
+    nds_control_set_unpaced(0);
     __atomic_store_n(&pause_requested, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&enabled, 1, __ATOMIC_RELEASE);
     pthread_mutex_unlock(&control_mutex);
@@ -85,6 +87,7 @@ void nds_control_end(void)
     __atomic_store_n(&pause_requested, 0, __ATOMIC_RELEASE);
     __atomic_store_n(&fixed_clock, -1, __ATOMIC_RELEASE);
     __atomic_store_n(&no_frameskip, 0, __ATOMIC_RELEASE);
+    nds_control_set_unpaced(0);
     __atomic_store_n(&compose_threads, ~0u, __ATOMIC_RELEASE);
     pthread_mutex_lock(&control_mutex);
     close_output(&capture_fd);
@@ -93,6 +96,16 @@ void nds_control_end(void)
     state.paused = 0;
     state.target = 0;
     pthread_mutex_unlock(&control_mutex);
+}
+
+void nds_control_set_unpaced(int enabled)
+{
+    __atomic_store_n(&unpaced, enabled != 0, __ATOMIC_RELEASE);
+}
+
+int nds_control_is_unpaced(void)
+{
+    return __atomic_load_n(&unpaced, __ATOMIC_ACQUIRE);
 }
 
 void nds_control_status(nds_control_status_t *out)

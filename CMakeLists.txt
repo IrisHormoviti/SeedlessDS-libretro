@@ -149,10 +149,46 @@ target_link_libraries(seedlessds_libretro PRIVATE
     dl
 )
 
+# Match BananaDS's opt-in LTO build for constrained AArch64 targets. Keep this
+# disabled by default because some cross toolchains do not ship compatible
+# plugin-aware archivers and linkers.
+option(SEEDLESS_ENABLE_IPO "Enable interprocedural optimization for the core" OFF)
+if(SEEDLESS_ENABLE_IPO)
+    include(CheckIPOSupported)
+    check_ipo_supported(RESULT SEEDLESS_IPO_SUPPORTED
+        OUTPUT SEEDLESS_IPO_ERROR
+        LANGUAGES C CXX)
+    if(NOT SEEDLESS_IPO_SUPPORTED)
+        message(FATAL_ERROR "IPO is unavailable: ${SEEDLESS_IPO_ERROR}")
+    endif()
+
+    set_property(TARGET recon_fn seedlessds_libretro
+        PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+    foreach(target IN ITEMS seedless_lua seedless_unrar seedless_lzma zlibstatic zlib)
+        if(TARGET ${target})
+            set_property(TARGET ${target} PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
+        endif()
+    endforeach()
+endif()
+
 if(NOT APPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/link.T")
     target_link_options(seedlessds_libretro PRIVATE
         -Wl,--version-script=${CMAKE_CURRENT_SOURCE_DIR}/link.T
         -Wl,-Bsymbolic)
+endif()
+
+# Tune host C/C++ without raising the baseline AArch64 instruction set.
+set(SEEDLESS_ARM_TUNE "" CACHE STRING "Optional AArch64 CPU tune (for example cortex-a55)")
+if(SEEDLESS_ARM_TUNE)
+    include(CheckCCompilerFlag)
+    check_c_compiler_flag("-mtune=${SEEDLESS_ARM_TUNE}" "SEEDLESS_TUNE_${SEEDLESS_ARM_TUNE}")
+    if(NOT SEEDLESS_TUNE_${SEEDLESS_ARM_TUNE})
+        message(FATAL_ERROR "Unsupported ARM tuning: ${SEEDLESS_ARM_TUNE}")
+    endif()
+    foreach(target IN ITEMS recon_fn seedlessds_libretro)
+        target_compile_options(${target} PRIVATE
+            "$<$<COMPILE_LANGUAGE:C,CXX>:-mtune=${SEEDLESS_ARM_TUNE}>")
+    endforeach()
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")

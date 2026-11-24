@@ -5,6 +5,9 @@
 #include <fcntl.h>
 #include <glob.h>
 #include <stdio.h>
+#ifdef SEEDLESS_TEST_EGL
+#include <stdlib.h>
+#endif
 #include <unistd.h>
 #include <string.h>
 
@@ -49,10 +52,37 @@ void compute_context_close(void)
     device.lib = NULL;
 }
 
+static bool open_display(void)
+{
+    const EGLint config_attrs[] = {
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT_KHR,
+        EGL_SURFACE_TYPE, 0, EGL_NONE
+    };
+    const EGLint context_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
+    EGLConfig config;
+    EGLint n;
+    if (!device.display || !eglInitialize(device.display, NULL, NULL) ||
+        !eglBindAPI(EGL_OPENGL_ES_API) ||
+        !eglChooseConfig(device.display, config_attrs, &config, 1, &n) || !n)
+        return false;
+    device.context = eglCreateContext(device.display, config, EGL_NO_CONTEXT, context_attrs);
+    return device.context && compute_context_bind();
+}
+
 bool compute_context_open(void)
 {
     PFNEGLGETPLATFORMDISPLAYEXTPROC platform = (PFNEGLGETPLATFORMDISPLAYEXTPROC)
         eglGetProcAddress("eglGetPlatformDisplayEXT");
+#ifdef SEEDLESS_TEST_EGL
+    if (platform && getenv("SEEDLESS_TEST_SURFACELESS")) {
+        device.display = platform(EGL_PLATFORM_SURFACELESS_MESA, EGL_DEFAULT_DISPLAY, NULL);
+        if (open_display()) {
+            fprintf(stderr, "[SeedlessDS compute] standalone surfaceless EGL test\n");
+            return true;
+        }
+        goto fail;
+    }
+#endif
     device.lib = dlopen("libgbm.so.1", RTLD_NOW | RTLD_LOCAL);
     if (!device.lib || !platform) goto fail;
     struct gbm_device *(*create)(int) = dlsym(device.lib, "gbm_create_device");
@@ -61,28 +91,16 @@ bool compute_context_open(void)
 
     glob_t nodes = {0};
     if (glob("/dev/dri/renderD*", 0, NULL, &nodes) != 0) { globfree(&nodes); goto fail; }
-    const EGLint config_attrs[] = {
-        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT_KHR,
-        EGL_SURFACE_TYPE, 0, EGL_NONE
-    };
-    const EGLint context_attrs[] = { EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE };
     for (size_t i = 0; i < nodes.gl_pathc; i++) {
         device.fd = open(nodes.gl_pathv[i], O_RDWR | O_CLOEXEC);
         if (device.fd < 0) continue;
-        EGLConfig config;
-        EGLint n;
         device.gbm = create(device.fd);
         if (device.gbm)
             device.display = platform(EGL_PLATFORM_GBM_KHR, device.gbm, NULL);
-        if (device.display && eglInitialize(device.display, NULL, NULL) &&
-            eglBindAPI(EGL_OPENGL_ES_API) &&
-            eglChooseConfig(device.display, config_attrs, &config, 1, &n) && n) {
-            device.context = eglCreateContext(device.display, config, EGL_NO_CONTEXT, context_attrs);
-            if (device.context && compute_context_bind()) {
-                fprintf(stderr, "[SeedlessDS compute] EGL on %s\n", nodes.gl_pathv[i]);
-                globfree(&nodes);
-                return true;
-            }
+        if (open_display()) {
+            fprintf(stderr, "[SeedlessDS compute] EGL on %s\n", nodes.gl_pathv[i]);
+            globfree(&nodes);
+            return true;
         }
         close_node();
     }

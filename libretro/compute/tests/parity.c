@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 static uint32_t candidate[256*192], reference[256*192];
 static uint32_t texels[256*256], palette[256];
@@ -13,9 +14,25 @@ static uint8_t indices[256*256];
 
 enum { GOURAUD=1, VARY_Z=2, VARY_W=4, W_BUFFER=8, TEXTURE=16,
        INDEXED=32, DECAL=64, RECT=128, OVERLAP=256, EQUAL=512, TRANS=1024, BLEND=2048, WRITE_Z=4096,
-       TOON=8192, HIGHLIGHT=16384, EDGES=32768, FOG=65536, FOG_ALPHA=131072 };
+       TOON=8192, HIGHLIGHT=16384, EDGES=32768, FOG=65536, FOG_ALPHA=131072, BORDER=262144 };
 
-static bool run(gpu_t *gpu, const char *name, unsigned flags)
+static double time_us(void)
+{
+    struct timespec t;
+    clock_gettime(CLOCK_MONOTONIC, &t);
+    return t.tv_sec * 1000000.0 + t.tv_nsec / 1000.0;
+}
+
+static void draw_reference(gpu_t *gpu, unsigned flags)
+{
+    gpu3d_raster_band_draw_dispatch(gpu->band_context[0]);
+    if (!(flags & EDGES)) return;
+    if (!(flags & FOG)) gpu3d_raster_band_flush_plain(gpu);
+    else if (flags & FOG_ALPHA) gpu3d_raster_band_compose_set_alpha(gpu);
+    else gpu3d_raster_band_flush_fogged(gpu);
+}
+
+static bool run(gpu_t *gpu, const char *name, unsigned flags, unsigned repeats)
 {
     gpu3d_t *scene = GPU3D_OF(gpu);
     gpu3d_polygon_t *polys = scene->opaque[0].polygon;
@@ -38,7 +55,8 @@ static bool run(gpu_t *gpu, const char *name, unsigned flags)
         .width=256, .height=256, .format=flags & INDEXED ? 4 : 7
     };
     for (unsigned i=0; i<polys_n; i++) {
-        unsigned x = 13 + i*7, y = 19 + i*3;
+        unsigned x = (flags & BORDER ? 0 : 13) + i*7;
+        unsigned y = (flags & BORDER ? 0 : 19) + i*3;
         gpu3d_bank_vertex_t *a = v+i*n;
         a[0] = (gpu3d_bank_vertex_t){.x=x,.y=y,.z=123-i,.w=4096,.color=0x271e - i*0x810,.s=16,.t=32};
         a[1]=a[2]=a[3]=a[0];
@@ -49,7 +67,7 @@ static bool run(gpu_t *gpu, const char *name, unsigned flags)
             a[2].t=a[3].t=a[0].t+122*16;
         } else {
             a[1].x=231; a[1].y=93; a[1].s=3900; a[1].t=300;
-            a[2].x=105; a[2].y=173; a[2].s=(uint16_t)-900; a[2].t=4500;
+            a[2].x=105; a[2].y=flags & BORDER ? 192 : 173; a[2].s=(uint16_t)-900; a[2].t=4500;
         }
         if (flags & GOURAUD) { a[1].color=0x1532; a[2].color=0x6321; }
         if (flags & VARY_W) { a[1].w=7859; a[2].w=3084; }
@@ -87,12 +105,7 @@ static bool run(gpu_t *gpu, const char *name, unsigned flags)
         fprintf(stderr,"%s could not dispatch\n",name);
         return false;
     }
-    gpu3d_raster_band_draw_dispatch(gpu->band_context[0]);
-    if (flags & EDGES) {
-        if (!(flags & FOG)) gpu3d_raster_band_flush_plain(gpu);
-        else if (flags & FOG_ALPHA) gpu3d_raster_band_compose_set_alpha(gpu);
-        else gpu3d_raster_band_flush_fogged(gpu);
-    }
+    draw_reference(gpu, flags);
     unsigned bad=0;
     for (unsigned i=0; i<256*192; i++) {
         if (reference[i]==candidate[i]) continue;
@@ -101,11 +114,33 @@ static bool run(gpu_t *gpu, const char *name, unsigned flags)
         bad++;
     }
     printf("%s: %u differing pixels\n",name,bad);
-    return bad==0;
+    if (bad || !repeats) return bad == 0;
+    double cpu = 0, gl = 0;
+    for (unsigned i = 0; i < repeats; i++) {
+        double start = time_us();
+        if (!compute_frame(gpu, scene, 0, (uint8_t *)candidate)) return false;
+        gl += time_us() - start;
+        start = time_us();
+        draw_reference(gpu, flags);
+        cpu += time_us() - start;
+    }
+    printf("  %u warm draws, mean microseconds: software %.1f, GLES %.1f\n",
+           repeats, cpu/repeats, gl/repeats);
+    return memcmp(reference, candidate, sizeof(reference)) == 0;
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    unsigned repeats = 0;
+    if (argc == 3 && strcmp(argv[1], "--bench") == 0) {
+        char *end;
+        unsigned long n = strtoul(argv[2], &end, 10);
+        if (*end == '\0' && n > 0 && n <= 100000) repeats = (unsigned)n;
+    }
+    if (argc != 1 && !repeats) {
+        fprintf(stderr, "Usage: %s [--bench iterations]\n", argv[0]);
+        return 2;
+    }
     gpu_t *gpu=calloc(1,GPU_SIZE+GPU3D_SIZE);
     if (!gpu) return 1;
     static uint32_t config[512];
@@ -150,14 +185,17 @@ int main(void)
         {"translucent polygons",TRANS|OVERLAP|BLEND}, {"translucent depth write",TRANS|OVERLAP|WRITE_Z},
         {"translucent texture",TRANS|OVERLAP|BLEND|TEXTURE|INDEXED},
         {"translucent rectangles",TRANS|OVERLAP|RECT|TEXTURE|INDEXED|BLEND},
-        {"edge marking",EDGES|OVERLAP}, {"edge marking with blend",EDGES|OVERLAP|TRANS|BLEND},
+        {"edge marking",EDGES|OVERLAP},
+        {"edges at screen border",EDGES|OVERLAP|BORDER},
+        {"edges with textured rectangles",EDGES|OVERLAP|TEXTURE|RECT},
+        {"edge marking with blend",EDGES|OVERLAP|TRANS|BLEND},
         {"colour fog",FOG|OVERLAP}, {"alpha fog",FOG|FOG_ALPHA|OVERLAP},
         {"edges and fog",EDGES|FOG|OVERLAP}, {"edges and alpha fog",EDGES|FOG|FOG_ALPHA|OVERLAP},
         {"mixed interpolation",TEXTURE|INDEXED|GOURAUD|VARY_W|VARY_Z|OVERLAP}
     };
     bool ok=true;
     for (unsigned i=0;i<sizeof(cases)/sizeof(*cases);i++)
-        ok=run(gpu,cases[i].name,cases[i].flags) && ok;
+        ok=run(gpu,cases[i].name,cases[i].flags,repeats) && ok;
     compute_stop();
     free(gpu);
     return ok ? 0 : 1;

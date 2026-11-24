@@ -4,6 +4,7 @@
 #include "blob_symbols.h"
 #include "core/nds_state.h"
 #include "present_hook.h"
+#include "seedlessds/control.h"
 #include "seedlessds/platform.h"
 #include "core_internals.h"
 #include "mem_access.h"
@@ -39,6 +40,12 @@ void pacer_run(uint8_t *ctx) {
 
     nds_config_t *p = &((nds_t *)ctx)->config;
     nds_runtime_t *g = &((nds_t *)ctx)->runtime;
+
+    if (nds_control_is_unpaced()) {
+        g->skip_frame = 0;
+        recon_pacer_behind = 0;
+        return;
+    }
 
     uint32_t step = p->fast_forward_speed;
 

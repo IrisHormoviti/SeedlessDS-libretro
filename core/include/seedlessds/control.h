@@ -35,6 +35,8 @@ typedef struct nds_control_status {
 
 void nds_control_begin(int64_t clock_seconds, int no_frameskip, unsigned compose_threads);
 void nds_control_end(void);
+void nds_control_set_unpaced(int enabled);
+int nds_control_is_unpaced(void);
 void nds_control_status(nds_control_status_t *out);
 void nds_control_frame_boundary(void);
 int nds_control_pause_requested(void);

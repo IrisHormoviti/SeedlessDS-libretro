@@ -1,0 +1,42 @@
+precision highp int;
+layout(local_size_x=WORKGROUP_X, local_size_y=WORKGROUP_Y) in;
+
+layout(std430, binding=0) readonly buffer Raster { uint planes[]; };
+layout(std430, binding=1) writeonly buffer Resolve { uint pixels[]; };
+uniform uint clearDepth;
+uniform uint edgeColors[8];
+
+const uint width = 256u;
+const uint height = 192u;
+const uint planeSize = width*height;
+
+bool exposesEdge(uint neighbor, uint depth, uint id)
+{
+    return (neighbor & 0xffffffu) > depth && ((neighbor >> 24u) & 63u) != id;
+}
+
+void main()
+{
+    uvec2 xy = gl_GlobalInvocationID.xy;
+    uint i = xy.y*width + xy.x;
+    // The software bottom-border routine takes the penultimate row as
+    // its centre. Match it while taking the output colour from the last row.
+    bool bottom = xy.y == height-1u;
+    uint center = planeSize+i-(bottom ? width : 0u);
+    uint attr = planes[center];
+    uint color = planes[i] & 0x1fffffffu;
+    // Bit 30 marks eligible edges. The CPU's XOR maps unmarked IDs into
+    // 64..127, outside the palette, so those pixels already have final RGB.
+    if ((attr & 0x40000000u) != 0u) {
+        uint depth = attr & 0xffffffu;
+        uint id = (attr >> 24u) & 63u;
+        uint left = xy.x == 0u ? clearDepth : planes[center-1u];
+        uint right = xy.x == width-1u ? clearDepth : planes[center+1u];
+        uint above = xy.y == 0u || bottom ? clearDepth : planes[center-width];
+        uint below = planes[center+width];
+        if (exposesEdge(left, depth, id) || exposesEdge(right, depth, id) ||
+            exposesEdge(above, depth, id) || exposesEdge(below, depth, id))
+            color = (color & 0x1f000000u) | edgeColors[id >> 3u];
+    }
+    pixels[i] = color;
+}

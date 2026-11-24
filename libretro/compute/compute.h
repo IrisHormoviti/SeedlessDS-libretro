@@ -7,6 +7,8 @@
 
 /* Called before the emulation thread starts and after its workers stop. */
 void compute_start(bool verify);
+/* Read after the emulation and raster threads are quiescent. */
+bool compute_report(void);
 void compute_stop(void);
 bool compute_frame(gpu_t *gpu, gpu3d_t *scene, unsigned bank, uint8_t *dst);
 void compute_check(const uint8_t *reference);

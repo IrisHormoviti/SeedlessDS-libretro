@@ -15,7 +15,7 @@ typedef struct {
 } texture_slot;
 
 static struct {
-    bool enabled, verify, ready, failed, compare;
+    bool enabled, verify, ready, failed, compare, textured, toon;
     unsigned count, words, span_cap, arena_cap;
     unsigned coef_words, coef_cap, known_words, dirty_first, dirty_end;
     uint32_t *coefficients;
@@ -26,7 +26,7 @@ static struct {
     compute_span *input;
     uint32_t *arena, *reference_candidate, *planes;
     texture_slot textures[HASH_SIZE];
-    uint64_t rendered, fallback, compared;
+    uint64_t rendered, fallback, compared, mismatches, edge_resolves;
 } batch;
 
 static void *grow(void *old, unsigned *capacity, unsigned needed,
@@ -70,10 +70,12 @@ static bool material(const gpu3d_polygon_t *p, unsigned disp)
     s->attr = p->polygon_attr;
     s->tex_param = p->texture_param;
     s->texture_base = s->palette_base = UINT32_MAX;
+    if ((s->attr & 48u) == 32u) batch.toon = true;
     if ((s->attr & 48u) == 48u || !(s->attr & 0x1f0000u)) return false;
     if (disp & 2) s->flags |= 32;
     if (disp & 0x20) s->flags |= 64;
     if (!(p->vertex_count & 0x200)) return true;
+    batch.textured = true;
     const gpu3d_texture_entry_t *t = p->texture;
     if (!t || !t->data || (t->palette_count && !t->palette) ||
         t->palette_count > 256 ||
@@ -197,13 +199,21 @@ void compute_start(bool verify)
     batch.verify = verify;
 }
 
+bool compute_report(void)
+{
+    if (batch.rendered || batch.fallback)
+        fprintf(stderr, "[SeedlessDS compute] %llu GPU frames, %llu CPU fallback, "
+                "%llu compared, %llu mismatches, %llu GPU edge resolves\n",
+            (unsigned long long)batch.rendered, (unsigned long long)batch.fallback,
+            (unsigned long long)batch.compared, (unsigned long long)batch.mismatches,
+            (unsigned long long)batch.edge_resolves);
+    return batch.compared != 0 && batch.mismatches == 0;
+}
+
 void compute_stop(void)
 {
     if (batch.ready) compute_gl_close();
-    if (batch.rendered || batch.fallback)
-        fprintf(stderr, "[SeedlessDS compute] %llu GPU frames, %llu CPU fallback, %llu compared\n",
-            (unsigned long long)batch.rendered, (unsigned long long)batch.fallback,
-            (unsigned long long)batch.compared);
+    compute_report();
     free(batch.input); free(batch.bins); free(batch.arena); free(batch.reference_candidate); free(batch.planes); free(batch.coefficients);
     memset(&batch, 0, sizeof(batch));
 }
@@ -217,7 +227,7 @@ bool compute_frame(gpu_t *gpu, gpu3d_t *scene, unsigned bank, uint8_t *dst)
         recon_block_header != GPU3D_BAND_HEADER_OFFSET)
         goto fallback;
     batch.count = batch.words = batch.coef_words = 0;
-    batch.failed = false;
+    batch.failed = batch.textured = batch.toon = false;
     memset(batch.counts, 0, sizeof(batch.counts));
     memset(batch.textures, 0, sizeof(batch.textures));
     const gpu3d_bank_vertex_t *v = scene->vertex_bank[bank].vertex;
@@ -239,26 +249,31 @@ bool compute_frame(gpu_t *gpu, gpu3d_t *scene, unsigned bank, uint8_t *dst)
         }
     }
     if (!batch.count) goto fallback;
-    /* Sort small references, never duplicate the 64-byte span per bin.
-     * Stable insertion preserves opaque/translucent order at equal depths. */
-    unsigned total = BIN_COUNT + 1;
-    for (unsigned i = 0; i < BIN_COUNT; i++) total += batch.counts[i];
-    batch.bins = grow(batch.bins, &batch.bin_cap, total, 2*MAX_SPANS*BINS_PER_ROW,
+    /* Each bin has a range in a flat list of packed 16-bit span IDs.
+     * Insertion keeps software polygon order, including equal-depth ties. */
+    unsigned refs = 0;
+    for (unsigned i = 0; i < BIN_COUNT; i++) refs += batch.counts[i];
+    unsigned total = BIN_COUNT + 1 + (refs+1)/2;
+    batch.bins = grow(batch.bins, &batch.bin_cap, total, MAX_SPANS*BINS_PER_ROW,
                       sizeof(uint32_t));
     if (batch.failed) goto fallback;
-    unsigned pos = BIN_COUNT + 1;
+    unsigned pos = 0;
     for (unsigned i = 0; i < BIN_COUNT; i++) {
         batch.bins[i] = pos;
         pos += batch.counts[i];
         batch.counts[i] = batch.bins[i];
     }
     batch.bins[BIN_COUNT] = pos;
+    /* A bin may start on either half of the same 32-bit word. */
+    memset(batch.bins + BIN_COUNT + 1, 0, ((refs+1)/2)*sizeof(uint32_t));
     for (unsigned i = 0; i < batch.count; i++) {
         const compute_span *s = &batch.input[i];
         unsigned x = (uint16_t)s->x_width, w = s->x_width >> 16;
         unsigned row = (s->reserved & 255u) * BINS_PER_ROW;
-        for (unsigned bx = x/BIN_WIDTH; bx <= (x+w-1)/BIN_WIDTH; bx++)
-            batch.bins[batch.counts[row+bx]++] = i;
+        for (unsigned bx = x/BIN_WIDTH; bx <= (x+w-1)/BIN_WIDTH; bx++) {
+            unsigned ref = batch.counts[row+bx]++;
+            batch.bins[BIN_COUNT+1+ref/2] |= i << ((ref&1u)*16);
+        }
     }
     if (!batch.ready) {
         if (!compute_gl_init()) { batch.enabled = false; goto fallback; }
@@ -272,7 +287,15 @@ bool compute_frame(gpu_t *gpu, gpu3d_t *scene, unsigned bank, uint8_t *dst)
     unsigned ctrl = gpu->raster.disp3dcnt;
     bool edges = (ctrl & 32u) && !pass;
     bool translucent = scene->translucent[bank].count != 0;
-    bool effects = edges || (ctrl & 128u) || translucent;
+    bool resolve_edges = edges && !(ctrl & 128u) && !translucent;
+    bool effects = (edges && !resolve_edges) || (ctrl & 128u) || translucent;
+    uint32_t edge_colors[8];
+    if (resolve_edges) {
+        for (unsigned i = 0; i < 8; i++)
+            edge_colors[i] = scene->edge_color_expanded[0][i] |
+                             ((uint32_t)scene->edge_color_expanded[1][i] << 8) |
+                             ((uint32_t)scene->edge_color_expanded[2][i] << 16);
+    }
     uint8_t *output = batch.verify ? (uint8_t *)batch.reference_candidate : dst;
     if (effects && !batch.planes) batch.planes = malloc(SCREEN_W*SCREEN_H*8);
     if (effects && !batch.planes) goto fallback;
@@ -280,7 +303,9 @@ bool compute_frame(gpu_t *gpu, gpu3d_t *scene, unsigned bank, uint8_t *dst)
                          batch.dirty_first, batch.dirty_end,
                          batch.coefficients, batch.coef_words,
                          gpu->raster.clear_color_rgb, gpu->raster.clear_depth_word,
-                         gpu->raster.alpha_test_ref, effects, effects ? (void *)batch.planes : output)) {
+                         gpu->raster.alpha_test_ref, effects, batch.textured || batch.toon,
+                         resolve_edges ? edge_colors : NULL,
+                         effects ? (void *)batch.planes : output)) {
         batch.enabled = false;
         goto fallback;
     }
@@ -314,6 +339,7 @@ bool compute_frame(gpu_t *gpu, gpu3d_t *scene, unsigned bank, uint8_t *dst)
         }
     }
     batch.rendered++;
+    batch.edge_resolves += resolve_edges;
     batch.compare = batch.verify;
     return !batch.verify;
 fallback:
@@ -330,6 +356,7 @@ void compute_check(const uint8_t *reference)
         uint32_t sw;
         memcpy(&sw, reference+i*4, 4);
         if (sw != batch.reference_candidate[i]) {
+            batch.mismatches++;
             fprintf(stderr, "[SeedlessDS compute] comparison %llu at (%u,%u): software %08x, GPU %08x; using software\n",
                 (unsigned long long)batch.compared, i%SCREEN_W, i/SCREEN_W, sw, batch.reference_candidate[i]);
             batch.enabled = false;
