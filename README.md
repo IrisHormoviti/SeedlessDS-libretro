@@ -79,6 +79,11 @@ The ARM64 analyzer keeps records for common blocks in a small stack buffer,
 spilling only larger blocks to the heap. It also avoids shrinking this
 temporary buffer after every block compilation.
 
+Slow ARM LDMs batch reads from directly mapped memory after refreshing the
+page-table descriptors. ARM9 STM bursts into the GX FIFO reuse the existing
+batched command decoder when the command ring is safely below its flush
+boundary, avoiding a slow I/O dispatch for each word.
+
 With the Linux GLES build, use the ROM replay tool to collect startup and
 scheduler throughput from the same fresh process. Use the same BIOS, saves and
 benchmark interval for both builds.

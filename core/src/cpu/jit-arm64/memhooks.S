@@ -1691,6 +1691,12 @@ L_jit_stm_write_words_slow_1:
     str  x30, [x28, #9064]
     mrs  x0, nzcv
     str  w0, [x28, #9044]
+    mov  x0, x28
+    mov  w1, w19
+    mov  w2, w21
+    mov  x3, x20
+    bl   jit_stm_gxfifo_words
+    cbnz w0, L_jit_stm_write_words_slow_done
 L_jit_stm_write_words_slow_2:
     ldr  w2, [x20], #4
     mov  w1, w19
@@ -1700,6 +1706,7 @@ L_jit_stm_write_words_slow_2:
     bl   bus_write32_slow
     subs w21, w21, #0x1
     b.ne L_jit_stm_write_words_slow_2
+L_jit_stm_write_words_slow_done:
     add  x9, x28, #0x3d0
     add  x9, x9, #0x2, lsl #12
     ldp  x10, x11, [x9, #-120]

@@ -119,6 +119,15 @@ void jit_dispatch_profile_read(uint64_t *primary_misses, uint64_t *secondary_hit
     if (secondary_hits) *secondary_hits = 0;
 }
 
+void jit_transfer_profile_read(uint64_t *ldm_calls, uint64_t *ldm_hits,
+                               uint64_t *gxfifo_stm_calls, uint64_t *gxfifo_stm_hits)
+{
+    if (ldm_calls) *ldm_calls = 0;
+    if (ldm_hits) *ldm_hits = 0;
+    if (gxfifo_stm_calls) *gxfifo_stm_calls = 0;
+    if (gxfifo_stm_hits) *gxfifo_stm_hits = 0;
+}
+
 void jit_cache_refresh_block_info(unsigned char *ctx)
 {
     (void)ctx;

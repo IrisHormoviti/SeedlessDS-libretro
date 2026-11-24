@@ -1161,6 +1161,10 @@ static uint64_t jit_cache_line_sizes[2] = { 0xffffu, 0xffffu };
 static uint64_t jit_profile_blocks;
 static uint64_t jit_profile_analysis_us;
 #if defined(SEEDLESS_JIT_PROFILE)
+static uint64_t jit_profile_ldm_batch_calls;
+static uint64_t jit_profile_ldm_batch_hits;
+static uint64_t jit_profile_gxfifo_stm_calls;
+static uint64_t jit_profile_gxfifo_stm_hits;
 uint64_t jit_dispatch_profile_counters[2][8]
     __attribute__((visibility("hidden"), aligned(64)));
 
@@ -1175,12 +1179,32 @@ void jit_dispatch_profile_read(uint64_t *primary_misses, uint64_t *secondary_hit
 }
 #endif
 
+void jit_transfer_profile_read(uint64_t *ldm_calls, uint64_t *ldm_hits,
+                               uint64_t *gxfifo_stm_calls, uint64_t *gxfifo_stm_hits)
+{
+#if defined(SEEDLESS_JIT_PROFILE)
+    if (ldm_calls) *ldm_calls = __atomic_load_n(&jit_profile_ldm_batch_calls, __ATOMIC_RELAXED);
+    if (ldm_hits) *ldm_hits = __atomic_load_n(&jit_profile_ldm_batch_hits, __ATOMIC_RELAXED);
+    if (gxfifo_stm_calls) *gxfifo_stm_calls = __atomic_load_n(&jit_profile_gxfifo_stm_calls, __ATOMIC_RELAXED);
+    if (gxfifo_stm_hits) *gxfifo_stm_hits = __atomic_load_n(&jit_profile_gxfifo_stm_hits, __ATOMIC_RELAXED);
+#else
+    if (ldm_calls) *ldm_calls = 0;
+    if (ldm_hits) *ldm_hits = 0;
+    if (gxfifo_stm_calls) *gxfifo_stm_calls = 0;
+    if (gxfifo_stm_hits) *gxfifo_stm_hits = 0;
+#endif
+}
+
 void jit_profile_reset(void)
 {
     __atomic_store_n(&jit_profile_blocks, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&jit_profile_analysis_us, 0, __ATOMIC_RELAXED);
 #if defined(SEEDLESS_JIT_PROFILE)
     memset(jit_dispatch_profile_counters, 0, sizeof jit_dispatch_profile_counters);
+    __atomic_store_n(&jit_profile_ldm_batch_calls, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&jit_profile_ldm_batch_hits, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&jit_profile_gxfifo_stm_calls, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&jit_profile_gxfifo_stm_hits, 0, __ATOMIC_RELAXED);
     jit_warm_profile_loaded = 0;
     jit_warm_profile_signature_skips = 0;
     jit_warm_profile_already_compiled = 0;
@@ -1340,6 +1364,9 @@ void *jit_cache_lookup_or_compile(void *ctx, uint32_t dir)
 int jit_ldm_main_ram_words(void *ctx, uint32_t address, uint32_t count,
                            uint32_t *destination)
 {
+#if defined(SEEDLESS_JIT_PROFILE)
+    __atomic_add_fetch(&jit_profile_ldm_batch_calls, 1, __ATOMIC_RELAXED);
+#endif
     arm_t *cpu = (arm_t *)ctx;
     if (!cpu)
         return 0;
@@ -1379,6 +1406,46 @@ int jit_ldm_main_ram_words(void *ctx, uint32_t address, uint32_t count,
 
     for (uint32_t i = 0; i < count; i++)
         destination[i] = rd32(entry->read_memory + ((address + i * 4u) & entry->mask));
+#if defined(SEEDLESS_JIT_PROFILE)
+    __atomic_add_fetch(&jit_profile_ldm_batch_hits, 1, __ATOMIC_RELAXED);
+#endif
+    return 1;
+}
+
+/* ARM STM bursts into the GX FIFO otherwise dispatch every word through the
+ * slow I/O bus path. Reuse the FIFO's DMA batch decoder when this burst cannot
+ * trigger its command-ring flush; boundary cases retain per-word semantics. */
+int jit_stm_gxfifo_words(void *ctx, uint32_t address, uint32_t count,
+                         const uint32_t *source)
+{
+#if defined(SEEDLESS_JIT_PROFILE)
+    __atomic_add_fetch(&jit_profile_gxfifo_stm_calls, 1, __ATOMIC_RELAXED);
+#endif
+    arm_t *cpu = (arm_t *)ctx;
+    if (!cpu || !cpu->is_arm9 || !cpu->bus || !source || count < 2 || count > 16 ||
+        (address & 3u) || address < 0x04000400u)
+        return 0;
+
+    uint32_t last = address + count * 4u - 4u;
+    if (last < address || last > 0x0400043cu)
+        return 0;
+
+    bus_t *bus = cpu->bus;
+    gpu3d_t *gpu3d = bus->gpu3d;
+    if (!gpu3d || !gpu3d->command_pending_cursor || !gpu3d->param_pending_cursor)
+        return 0;
+
+    uint32_t used = (uint32_t)(gpu3d->command_pending_cursor - gpu3d->command_ring);
+    if (used + count * 4u >= 0x400u)
+        return 0;
+
+    gpu3d_gxfifo_decode_commands(gpu3d, (uint32_t *)source, count);
+    uint8_t *mirror = (uint8_t *)bus->io_mirror;
+    for (uint32_t i = 0; i < count; i++)
+        wr32(mirror + ((address + i * 4u) & 0x7fffu), rd32(source + i));
+#if defined(SEEDLESS_JIT_PROFILE)
+    __atomic_add_fetch(&jit_profile_gxfifo_stm_hits, 1, __ATOMIC_RELAXED);
+#endif
     return 1;
 }
 
