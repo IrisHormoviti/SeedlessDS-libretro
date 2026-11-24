@@ -46,8 +46,7 @@ typedef struct arm_debug {
 
 typedef struct arm {
     nds_timer_t timers[4];
-    uint32_t block_lookup_pc[ARM_BLOCK_LOOKUP];
-    uint32_t block_lookup_offset[ARM_BLOCK_LOOKUP];
+    uint64_t block_lookup[ARM_BLOCK_LOOKUP];
     struct io_mirror *io_mirror;
     struct jit_arena *jit_arena;
     uint32_t banked_sp_lr[ARM_BANKS][2];

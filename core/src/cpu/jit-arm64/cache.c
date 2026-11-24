@@ -93,7 +93,7 @@ uint32_t jit_watch_write_notify(unsigned char *machine, uint32_t dir)
         if (found) {
 
             arena->itcm_arm_blocks[idx] = (uint32_t)(ent->block - (uint8_t *)arena);
-            CPU(machine)->block_lookup_pc[(dir >> 2) & 0x3ffu] = 0;
+            CPU(machine)->block_lookup[(dir >> 2) & 0x3ffu] = 0;
             return 0;
         }
 
@@ -106,7 +106,7 @@ uint32_t jit_watch_write_notify(unsigned char *machine, uint32_t dir)
             e->word = key;
             e->pc = dir;
             arena->itcm_arm_blocks[idx] = 0;
-            CPU(machine)->block_lookup_pc[(dir >> 2) & 0x3ffu] = 0;
+            CPU(machine)->block_lookup[(dir >> 2) & 0x3ffu] = 0;
 
             block = compile(machine, dir);
 
@@ -925,8 +925,7 @@ void *jit_cache_lookup_or_compile(void *ctx, uint32_t dir)
     uint32_t off = 0;
 
 #define LOOKUP_RETURN(p, o) do {                                    \
-        CPU(c)->block_lookup_pc[i13] = dir;               \
-        CPU(c)->block_lookup_offset[i13] = (o);           \
+        CPU(c)->block_lookup[i13] = ((uint64_t)(o) << 32) | dir; \
         return (void *)(p);                               \
     } while (0)
 
@@ -1241,14 +1240,10 @@ int32_t jit_cache_flush(uint8_t *ctx, uint32_t arg) {
     uint8_t *other = (uint8_t *)CPU(ctx)->partner;
     uint32_t f = arg;
 
-    ((fn_memset)sym_libc_memset)(CPU(ctx)->block_lookup_pc, 0,
-                                  sizeof CPU(ctx)->block_lookup_pc);
-    ((fn_memset)sym_libc_memset)(CPU(ctx)->block_lookup_offset, 0,
-                                  sizeof CPU(ctx)->block_lookup_offset);
-    ((fn_memset)sym_libc_memset)(CPU(other)->block_lookup_pc, 0,
-                                  sizeof CPU(other)->block_lookup_pc);
-    ((fn_memset)sym_libc_memset)(CPU(other)->block_lookup_offset, 0,
-                                  sizeof CPU(other)->block_lookup_offset);
+    ((fn_memset)sym_libc_memset)(CPU(ctx)->block_lookup, 0,
+                                  sizeof CPU(ctx)->block_lookup);
+    ((fn_memset)sym_libc_memset)(CPU(other)->block_lookup, 0,
+                                  sizeof CPU(other)->block_lookup);
 
     int short_form = 0;
     if (((f >> 24) & 0xffu) == 2) short_form = 1;
