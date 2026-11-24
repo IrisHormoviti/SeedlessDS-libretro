@@ -256,7 +256,9 @@ bool compute_gl_draw(const compute_span *spans, unsigned count, const uint32_t *
     gl.Uniform1ui(program->depth, depth);
     gl.Uniform1ui(program->alpha, alpha);
     gl.Uniform1ui(program->effects, effects || edge_colors);
-    bool ok = gl.GetError() == GL_NO_ERROR;
+    /* The final error query covers uploads and dispatch; avoid querying twice
+     * in this per-frame path before submitting the compute work. */
+    bool ok = true;
 #ifdef SEEDLESS_COMPUTE_PROFILE
     uint64_t upload_end = profile_now_ns();
     uint64_t submit_start = upload_end;
