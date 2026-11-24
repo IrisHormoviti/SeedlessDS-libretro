@@ -908,6 +908,21 @@ _Static_assert(offsetof(arm_t, block_lookup) == 0x80, "JIT target cache offset")
 _Static_assert(offsetof(arm_t, is_arm9) == 0x210c, "JIT CPU selector offset");
 extern uint64_t jit_block_lookup_secondary[2][ARM_BLOCK_LOOKUP]
     __attribute__((visibility("hidden")));
+#if defined(SEEDLESS_JIT_PROFILE)
+extern uint64_t jit_dispatch_profile_counters[2][8]
+    __attribute__((visibility("hidden")));
+#define JIT_PROFILE_DISPATCH_COUNT(offset) \
+    "    adrp x5, jit_dispatch_profile_counters       \n" \
+    "    add x5, x5, :lo12:jit_dispatch_profile_counters\n" \
+    "    ldr w6, [x28, #0x210c]                    \n" \
+    "    lsl x6, x6, #6                           \n" \
+    "    add x5, x5, x6                            \n" \
+    "    ldr x7, [x5, #" offset "]                    \n" \
+    "    add x7, x7, #1                            \n" \
+    "    str x7, [x5, #" offset "]                    \n"
+#else
+#define JIT_PROFILE_DISPATCH_COUNT(offset) ""
+#endif
 #if defined(__aarch64__) || defined(__arm64__)
 __asm__(
 "    .text\n"
@@ -935,6 +950,7 @@ __asm__(
 "    ldr x2, [x1, #0x80]                       \n"
 "    cmp w2, w0                                \n"
 "    b.eq 2f                                   \n"
+JIT_PROFILE_DISPATCH_COUNT("0")
 "    adrp x3, jit_block_lookup_secondary       \n"
 "    add x3, x3, :lo12:jit_block_lookup_secondary\n"
 "    ldr w4, [x28, #0x210c]                    \n"
@@ -944,6 +960,7 @@ __asm__(
 "    ldr x4, [x3]                              \n"
 "    cmp w4, w0                                \n"
 "    b.ne L_jit_dispatch_lookup_or_compile_1   \n"
+JIT_PROFILE_DISPATCH_COUNT("8")
 "    str x2, [x3]                              \n"
 "    str x4, [x1, #0x80]                       \n"
 "    mov x2, x4                                \n"

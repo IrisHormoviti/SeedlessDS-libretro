@@ -89,6 +89,12 @@ void jit_profile_read(uint64_t *blocks, uint64_t *analysis_us)
     if (analysis_us) *analysis_us = 0;
 }
 
+void jit_dispatch_profile_read(uint64_t *primary_misses, uint64_t *secondary_hits)
+{
+    if (primary_misses) *primary_misses = 0;
+    if (secondary_hits) *secondary_hits = 0;
+}
+
 void jit_cache_refresh_block_info(unsigned char *ctx)
 {
     (void)ctx;

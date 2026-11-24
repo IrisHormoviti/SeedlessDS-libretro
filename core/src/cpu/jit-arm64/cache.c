@@ -902,11 +902,28 @@ int jit_watch_words_hit_16(unsigned char *ctx, uint32_t dir) {
 static uint64_t jit_cache_line_sizes[2] = { 0xffffu, 0xffffu };
 static uint64_t jit_profile_blocks;
 static uint64_t jit_profile_analysis_us;
+#if defined(SEEDLESS_JIT_PROFILE)
+uint64_t jit_dispatch_profile_counters[2][8]
+    __attribute__((visibility("hidden"), aligned(64)));
+
+void jit_dispatch_profile_read(uint64_t *primary_misses, uint64_t *secondary_hits)
+{
+    if (primary_misses)
+        *primary_misses = __atomic_load_n(&jit_dispatch_profile_counters[0][0], __ATOMIC_RELAXED)
+                        + __atomic_load_n(&jit_dispatch_profile_counters[1][0], __ATOMIC_RELAXED);
+    if (secondary_hits)
+        *secondary_hits = __atomic_load_n(&jit_dispatch_profile_counters[0][1], __ATOMIC_RELAXED)
+                        + __atomic_load_n(&jit_dispatch_profile_counters[1][1], __ATOMIC_RELAXED);
+}
+#endif
 
 void jit_profile_reset(void)
 {
     __atomic_store_n(&jit_profile_blocks, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&jit_profile_analysis_us, 0, __ATOMIC_RELAXED);
+#if defined(SEEDLESS_JIT_PROFILE)
+    memset(jit_dispatch_profile_counters, 0, sizeof jit_dispatch_profile_counters);
+#endif
 }
 
 void jit_profile_read(uint64_t *blocks, uint64_t *analysis_us)

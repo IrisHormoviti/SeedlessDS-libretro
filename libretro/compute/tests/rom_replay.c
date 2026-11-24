@@ -147,6 +147,8 @@ static bool benchmark(const struct retro_game_info *game, uint64_t warmup, uint6
     fprintf(stderr, "JIT analysis after warmup: %"PRIu64" blocks, %"PRIu64
             " us total\n", warmup_blocks - boot_blocks,
             warmup_analysis_us - boot_analysis_us);
+    uint64_t dispatch_misses_start, dispatch_hits_start;
+    jit_dispatch_profile_read(&dispatch_misses_start, &dispatch_hits_start);
 #endif
 #if defined(SEEDLESS_COMPUTE_PROFILE)
     compute_profile_reset();
@@ -162,6 +164,16 @@ static bool benchmark(const struct retro_game_info *game, uint64_t warmup, uint6
             frames, seconds, frames / seconds);
     fprintf(stderr, "Core output frames: %"PRIu64"; 3D dispatches: %"PRIu64"\n",
             status.output_frames - output_start, status.dispatches - dispatch_start);
+#if defined(SEEDLESS_JIT_PROFILE)
+    uint64_t dispatch_misses_end, dispatch_hits_end;
+    jit_dispatch_profile_read(&dispatch_misses_end, &dispatch_hits_end);
+    uint64_t dispatch_misses = dispatch_misses_end - dispatch_misses_start;
+    uint64_t dispatch_hits = dispatch_hits_end - dispatch_hits_start;
+    fprintf(stderr, "JIT target cache after primary misses: %"PRIu64
+            " secondary hits / %"PRIu64" primary misses (%.1f%% rescued)\n",
+            dispatch_hits, dispatch_misses,
+            dispatch_misses ? 100.0 * (double)dispatch_hits / (double)dispatch_misses : 0.0);
+#endif
 #if defined(SEEDLESS_COMPUTE_PROFILE)
     compute_profile_t gpu;
     compute_profile_read(&gpu);
