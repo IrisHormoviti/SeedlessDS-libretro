@@ -167,6 +167,8 @@ void nds_extfx_render(nds_t *nds, uint32_t texture, uint32_t index, uint32_t a,
                       uint32_t b, uint32_t c, uint32_t d);
 
 void *nds_main_ram(nds_t *nds);
+void *nds_save_ram(nds_t *nds);
+size_t nds_save_ram_size(nds_t *nds);
 size_t nds_memory_read(nds_t *nds, uint32_t address, void *buffer, size_t size);
 
 #ifdef __cplusplus

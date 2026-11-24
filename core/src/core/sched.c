@@ -361,7 +361,10 @@ void sched_list_check(uint8_t *param_1) {
     p_exit(-1);
 }
 
-void sched_advance(unsigned char *machine) {
+/* Reached straight from the dispatch assembly in script.c, which LTO cannot
+ * see; without `used` the inlined call below is all LTO keeps and the
+ * assembler reference resolves to address zero. */
+__attribute__((used)) void sched_advance(unsigned char *machine) {
     sched_t *sched = &((nds_t *)machine)->sched;
     uint32_t cycles = sched->slice_cycles;
     sched->cycles += (uint64_t)cycles;
