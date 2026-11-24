@@ -611,25 +611,25 @@ void jit_emit_link_queue_entry(jit_emitter_t *ctx) {
 
 static uint32_t rbit32(uint32_t x)
 {
+#if defined(__aarch64__)
+    uint32_t result;
+    __asm__("rbit %w0, %w1" : "=r"(result) : "r"(x));
+    return result;
+#else
     x = ((x >> 1) & 0x55555555u) | ((x & 0x55555555u) << 1);
     x = ((x >> 2) & 0x33333333u) | ((x & 0x33333333u) << 2);
     x = ((x >> 4) & 0x0f0f0f0fu) | ((x & 0x0f0f0f0fu) << 4);
     x = ((x >> 8) & 0x00ff00ffu) | ((x & 0x00ff00ffu) << 8);
     x = (x >> 16) | (x << 16);
     return x;
+#endif
 }
 
 static uint32_t clz32(uint32_t x)
 {
     if (x == 0)
         return 32;
-    uint32_t n = 0;
-    if ((x & 0xFFFF0000u) == 0) { n += 16; x <<= 16; }
-    if ((x & 0xFF000000u) == 0) { n += 8;  x <<= 8;  }
-    if ((x & 0xF0000000u) == 0) { n += 4;  x <<= 4;  }
-    if ((x & 0xC0000000u) == 0) { n += 2;  x <<= 2;  }
-    if ((x & 0x80000000u) == 0) { n += 1; }
-    return n;
+    return (uint32_t)__builtin_clz(x);
 }
 
 static uint32_t ctz32(uint32_t x)
