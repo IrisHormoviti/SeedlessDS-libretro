@@ -81,6 +81,14 @@ void *jit_cache_lookup_or_compile(void *ctx, uint32_t dir)
     return NULL;
 }
 
+void jit_profile_reset(void) {}
+
+void jit_profile_read(uint64_t *blocks, uint64_t *analysis_us)
+{
+    if (blocks) *blocks = 0;
+    if (analysis_us) *analysis_us = 0;
+}
+
 void jit_cache_refresh_block_info(unsigned char *ctx)
 {
     (void)ctx;

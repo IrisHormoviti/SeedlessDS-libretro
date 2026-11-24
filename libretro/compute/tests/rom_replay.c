@@ -3,6 +3,7 @@
 #include <libretro.h>
 #include "seedlessds/control.h"
 #include "compute.h"
+#include "core_internals.h"
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
@@ -118,8 +119,11 @@ static bool benchmark(const struct retro_game_info *game, uint64_t warmup, uint6
     nds_control_status_t status;
     struct timespec begin, end;
     clock_gettime(CLOCK_MONOTONIC, &begin);
-    if (!nds_control_run_to(1) || !retro_load_game(game) ||
-        !wait_until_paused(1, &status)) return false;
+    if (!nds_control_run_to(1)) return false;
+#if defined(SEEDLESS_JIT_PROFILE)
+    jit_profile_reset();
+#endif
+    if (!retro_load_game(game) || !wait_until_paused(1, &status)) return false;
     retro_run();
     if (!received_video) {
         fprintf(stderr, "Core did not deliver video at the first scheduler frame\n");
@@ -127,9 +131,23 @@ static bool benchmark(const struct retro_game_info *game, uint64_t warmup, uint6
     }
     fprintf(stderr, "ROM load to first replay video callback: %.2f ms\n",
             elapsed(begin, first_video) * 1000);
+#if defined(SEEDLESS_JIT_PROFILE)
+    uint64_t boot_blocks, boot_analysis_us;
+    jit_profile_read(&boot_blocks, &boot_analysis_us);
+    fprintf(stderr, "Cold-start JIT analysis: %"PRIu64" blocks, %"PRIu64
+            " us total (%.2f us/block)\n", boot_blocks, boot_analysis_us,
+            boot_blocks ? (double)boot_analysis_us / (double)boot_blocks : 0.0);
+#endif
 
     if (warmup && (!nds_control_run_to(1 + warmup) ||
                    !wait_until_paused(1 + warmup, &status))) return false;
+#if defined(SEEDLESS_JIT_PROFILE)
+    uint64_t warmup_blocks, warmup_analysis_us;
+    jit_profile_read(&warmup_blocks, &warmup_analysis_us);
+    fprintf(stderr, "JIT analysis after warmup: %"PRIu64" blocks, %"PRIu64
+            " us total\n", warmup_blocks - boot_blocks,
+            warmup_analysis_us - boot_analysis_us);
+#endif
     uint64_t output_start = status.output_frames;
     uint64_t dispatch_start = status.dispatches;
     uint64_t target = status.frames + frames;

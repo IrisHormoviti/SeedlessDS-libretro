@@ -93,6 +93,11 @@ target_sources(recon_fn PRIVATE
 # Propagate third_party / zlib include dirs onto OBJECT sources.
 target_link_libraries(recon_fn PUBLIC seedless_lua seedless_unrar seedless_lzma ZLIB::ZLIB)
 
+option(SEEDLESS_JIT_PROFILE "Measure JIT block analysis in ROM replay benchmarks" OFF)
+if(SEEDLESS_JIT_PROFILE)
+    target_compile_definitions(recon_fn PRIVATE SEEDLESS_JIT_PROFILE=1)
+endif()
+
 set(SEEDLESS_LIBRETRO_SOURCES
     libretro/libretro.c
     libretro/opensl_stub.c

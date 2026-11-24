@@ -151,6 +151,8 @@ void * jit_arena_regions_pair1(unsigned char *base);
 void jit_arena_regions_pair2(unsigned char *ctx);
 void * jit_block_lookup(void *param_1, uint32_t param_2);
 void * jit_cache_lookup_or_compile(void *ctx, uint32_t dir);
+void jit_profile_reset(void);
+void jit_profile_read(uint64_t *blocks, uint64_t *analysis_us);
 void jit_cache_refresh_block_info(unsigned char *ctx);
 void jit_link_pending_branches(void *ctx);
 uint32_t jit_watch_write16(unsigned char *machine, uint32_t dir);

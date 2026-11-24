@@ -886,6 +886,22 @@ int jit_watch_words_hit_16(unsigned char *ctx, uint32_t dir) {
 
 
 static uint64_t jit_cache_line_sizes[2] = { 0xffffu, 0xffffu };
+static uint64_t jit_profile_blocks;
+static uint64_t jit_profile_analysis_us;
+
+void jit_profile_reset(void)
+{
+    __atomic_store_n(&jit_profile_blocks, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&jit_profile_analysis_us, 0, __ATOMIC_RELAXED);
+}
+
+void jit_profile_read(uint64_t *blocks, uint64_t *analysis_us)
+{
+    if (blocks)
+        *blocks = __atomic_load_n(&jit_profile_blocks, __ATOMIC_RELAXED);
+    if (analysis_us)
+        *analysis_us = __atomic_load_n(&jit_profile_analysis_us, __ATOMIC_RELAXED);
+}
 
 static void flush_cache_range(const uint8_t *first, const uint8_t *last)
 {
@@ -962,7 +978,18 @@ void *jit_cache_lookup_or_compile(void *ctx, uint32_t dir)
     ar->pending_branch_count = 0;
     ar->block_pc_count = 0;
 
+#if defined(SEEDLESS_JIT_PROFILE)
+    uint64_t analysis_start, analysis_end;
+    time_now_microseconds(&analysis_start);
+#endif
     uint8_t *updated = (uint8_t *)jit_block_analyze(ctx, dir & ~1u, pair);
+#if defined(SEEDLESS_JIT_PROFILE)
+    time_now_microseconds(&analysis_end);
+    if (updated)
+        __atomic_add_fetch(&jit_profile_blocks, 1, __ATOMIC_RELAXED);
+    __atomic_add_fetch(&jit_profile_analysis_us, analysis_end - analysis_start,
+                       __ATOMIC_RELAXED);
+#endif
     uint32_t noff = (uint32_t)(updated - b);
 
     if (updated) {

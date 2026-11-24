@@ -80,6 +80,10 @@ build-device/libretro/compute/seedless_rom_replay \
   --bench "$rom" "$system_dir" software 120 1200
 ```
 
+Configure the build with -DSEEDLESS_JIT_PROFILE=ON to also report cold-start
+block analysis count and time, plus blocks analyzed during warmup. The option
+adds timing only around JIT compilation misses and is off in normal builds.
+
 The first video callback includes the replay tool's scheduler wait. Throughput
 is measured after the 120-frame warmup and excludes frontend pacing and KMS.
 Use `compute` in place of `software` to measure the GLES path with the same ROM.
