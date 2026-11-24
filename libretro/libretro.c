@@ -167,10 +167,7 @@ static uint64_t build_config_bits(void)
     const char *latency = opt_value("seedlessds_audio_latency", "low");
     unsigned fs_val = opt_unsigned("seedlessds_frameskip_value", 4);
     unsigned volume = opt_unsigned("seedlessds_audio_volume", 1);
-    /* RG DS Plus uses a four-core Cortex-A55. Three compositor workers leave
-     * one core available for the emulation thread instead of oversubscribing
-     * the device with the old eight-worker default. */
-    unsigned threads = opt_unsigned("seedlessds_thread_count", 3);
+    unsigned threads = opt_unsigned("seedlessds_thread_count", 8);
     unsigned profile = opt_unsigned("seedlessds_button_profile", 0);
     unsigned slot2 = opt_unsigned("seedlessds_slot2", 0);
     unsigned fs_enc;
@@ -205,7 +202,7 @@ static uint64_t build_config_bits(void)
     else if (strcmp(latency, "high") == 0)
         bits |= 2ull << 8;
 
-    /* bits 16-19: compose thread count */
+    /* bits 16-19: software 3D raster thread count */
     bits |= (uint64_t)(threads & 0xfu) << 16;
 
     if (opt_enabled("seedlessds_screen_16bit", 0))
