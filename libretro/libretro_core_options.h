@@ -354,7 +354,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "seedlessds_thread_count",
       "Compose Thread Count",
       NULL,
-      "Worker thread count field (0 = core default).",
+      "2D composition workers; 3 is tuned for four-core RG DS Plus devices.",
       NULL,
       "advanced",
       {
@@ -363,7 +363,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
          { "5", NULL }, { "6", NULL }, { "7", NULL }, { "8", NULL },
          { NULL, NULL },
       },
-      "8"
+      "3"
    },
    {
       "seedlessds_button_profile",

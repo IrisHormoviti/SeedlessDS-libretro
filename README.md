@@ -177,7 +177,8 @@ Configure under RetroArch Quick Menu → Core Options. Options map to Seedless /
 Defaults：
 
 - **Frameskip Type** = `None`
-- **Compose Thread Count** = `8`
+- **Compose Thread Count** = `3` (keeps one of the RG DS Plus's four A55 cores
+  available for emulation while the other three workers compose 2D output)
 - **Sound** = enabled；**Audio Latency** = low
 
 If the menu still shows old defaults, use “Reset to defaults” in core options.
