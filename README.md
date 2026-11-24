@@ -113,9 +113,10 @@ not a GPU timer.
 The first video callback includes the replay tool's scheduler wait. Throughput
 is measured after the 120-frame warmup and excludes frontend pacing and KMS.
 Use `compute` in place of `software` to measure the GLES path with the same ROM.
-The persistent JIT warm-start manifest keeps up to 256 validated guest PCs and
-precompiles all retained entries on the next normal JIT-enabled boot;
-savestate restores skip this prewarm.
+The persistent JIT warm-start manifest keeps up to 256 validated guest PCs.
+Once per emulated frame it samples the ARM9 and ARM7 PCs, then prioritizes
+repeatedly sampled blocks for precompilation on the next normal JIT-enabled
+boot. Savestate restores skip this prewarm.
 On a direct header boot, Seedless also seeds any ARM9 and ARM7 executable
 entry points that the manifest did not already warm. The JIT's existing
 direct-branch linking discovers reachable blocks; modified code and overlays

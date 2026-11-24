@@ -155,6 +155,7 @@ void jit_warm_cache_clear(void);
 void jit_warm_cache_begin(unsigned char *machine);
 void jit_warm_cache_preload(unsigned char *machine, int allow);
 void jit_warm_cache_record(void *ctx, uint32_t pc);
+void jit_warm_cache_sample(void *ctx, uint32_t pc);
 void jit_warm_cache_save(void);
 int jit_stm_gxfifo_words(void *ctx, uint32_t address, uint32_t count,
                          const uint32_t *source);

@@ -22,7 +22,7 @@ uint64_t jit_block_lookup_secondary[2][ARM_BLOCK_LOOKUP]
     __attribute__((visibility("hidden"), aligned(64)));
 
 #define JIT_WARM_CACHE_MAGIC 0x574a5344u
-#define JIT_WARM_CACHE_VERSION 2u
+#define JIT_WARM_CACHE_VERSION 3u
 #define JIT_WARM_CACHE_MAX_ENTRIES 256u
 #define JIT_WARM_CACHE_PREWARM_ENTRIES JIT_WARM_CACHE_MAX_ENTRIES
 #define JIT_WARM_CACHE_SIGNATURE_HALFWORDS 4u
@@ -31,6 +31,7 @@ typedef struct jit_warm_cache_entry {
     uint32_t pc;
     uint32_t cpu;
     uint32_t signature;
+    uint32_t samples;
 } jit_warm_cache_entry_t;
 
 typedef struct jit_warm_cache_header {
@@ -156,6 +157,20 @@ void jit_warm_cache_begin(unsigned char *machine)
         for (uint32_t i = 0; i < jit_warm_cache_preload_count; i++)
             jit_warm_cache_preload_entries[i] =
                 jit_warm_cache_entries[valid_count - i - 1];
+        /* The persisted list is oldest-to-newest for LRU tie-breaking. Rank
+         * repeated frame-boundary samples first, keeping newest entries first
+         * when two blocks have equal sample counts. */
+        for (uint32_t i = 1; i < jit_warm_cache_preload_count; i++) {
+            jit_warm_cache_entry_t entry = jit_warm_cache_preload_entries[i];
+            uint32_t j = i;
+            while (j != 0 &&
+                   jit_warm_cache_preload_entries[j - 1].samples < entry.samples) {
+                jit_warm_cache_preload_entries[j] =
+                    jit_warm_cache_preload_entries[j - 1];
+                j--;
+            }
+            jit_warm_cache_preload_entries[j] = entry;
+        }
     }
     close_file(file);
 }
@@ -269,17 +284,62 @@ void jit_warm_cache_record(void *ctx, uint32_t pc)
         }
     }
     if (index < jit_warm_cache_count) {
+        uint32_t samples = jit_warm_cache_entries[index].signature == signature
+            ? jit_warm_cache_entries[index].samples : 0;
         memmove(&jit_warm_cache_entries[index],
                 &jit_warm_cache_entries[index + 1],
                 (jit_warm_cache_count - index - 1) * sizeof(jit_warm_cache_entries[0]));
         jit_warm_cache_count--;
-    } else if (jit_warm_cache_count == JIT_WARM_CACHE_MAX_ENTRIES) {
-        memmove(&jit_warm_cache_entries[0], &jit_warm_cache_entries[1],
-                (JIT_WARM_CACHE_MAX_ENTRIES - 1) * sizeof(jit_warm_cache_entries[0]));
+        jit_warm_cache_entries[jit_warm_cache_count++] =
+            (jit_warm_cache_entry_t){ pc, cpu, signature, samples };
+        return;
+    }
+
+    if (jit_warm_cache_count == JIT_WARM_CACHE_MAX_ENTRIES) {
+        /* Evict the least sampled entry; ties evict the oldest one. */
+        uint32_t evict = 0;
+        for (uint32_t i = 1; i < jit_warm_cache_count; i++) {
+            if (jit_warm_cache_entries[i].samples <
+                jit_warm_cache_entries[evict].samples)
+                evict = i;
+        }
+        memmove(&jit_warm_cache_entries[evict],
+                &jit_warm_cache_entries[evict + 1],
+                (jit_warm_cache_count - evict - 1) * sizeof(jit_warm_cache_entries[0]));
         jit_warm_cache_count--;
     }
     jit_warm_cache_entries[jit_warm_cache_count++] =
-        (jit_warm_cache_entry_t){ pc, cpu, signature };
+        (jit_warm_cache_entry_t){ pc, cpu, signature, 0 };
+}
+
+void jit_warm_cache_sample(void *ctx, uint32_t pc)
+{
+    if (!jit_warm_cache_enabled || !ctx || !CPU(ctx)->machine ||
+        CPU(ctx)->machine->runtime.jit_enabled == 0 || !jit_block_lookup(ctx, pc))
+        return;
+
+    uint32_t cpu = CPU(ctx)->is_arm9 != 0;
+    uint32_t index = jit_warm_cache_count;
+    for (uint32_t i = 0; i < jit_warm_cache_count; i++) {
+        if (jit_warm_cache_entries[i].pc == pc &&
+            jit_warm_cache_entries[i].cpu == cpu) {
+            index = i;
+            break;
+        }
+    }
+    if (index == jit_warm_cache_count) {
+        jit_warm_cache_record(ctx, pc);
+        for (uint32_t i = 0; i < jit_warm_cache_count; i++) {
+            if (jit_warm_cache_entries[i].pc == pc &&
+                jit_warm_cache_entries[i].cpu == cpu) {
+                index = i;
+                break;
+            }
+        }
+    }
+    if (index < jit_warm_cache_count &&
+        jit_warm_cache_entries[index].samples != UINT32_MAX)
+        jit_warm_cache_entries[index].samples++;
 }
 
 void jit_warm_cache_save(void)

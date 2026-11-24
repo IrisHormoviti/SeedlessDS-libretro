@@ -169,6 +169,8 @@ void sched_scanline_event(void *machine, void *argument) {
             sig = 0x106;
         }
     } else if (code == 0xbf) {
+        jit_warm_cache_sample(iA, iA->pc);
+        jit_warm_cache_sample(iB, iB->pc);
         uint32_t tok = cart_slot2_gpio_countdown_tick(&((nds_t *)machine)->cart.slot2.gpio);
 
         uint32_t v = *(uint8_t *)bA;
