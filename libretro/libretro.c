@@ -118,7 +118,11 @@ static void wake_save_ram_waiters(void)
 #define STYLUS_DEADZONE 0x1800
 #define STYLUS_SPEED_PX 4.5f
 
-static uint32_t g_frame[SEEDLESS_SCREEN_W * SEEDLESS_FB_H];
+static uint32_t *g_frame;
+static size_t g_frame_pixels;
+/* The internal resolution requested by `seedlessds_resolution`: 1 presents the
+ * reduced 256×192 screens, 2..8 present the engine's full-resolution pages. */
+static unsigned g_scale = 1;
 static int16_t g_audio_tmp[SEEDLESS_AUDIO_RATE]; /* stereo frames * 2 */
 
 static void log_fallback(enum retro_log_level level, const char *fmt, ...)
@@ -254,6 +258,16 @@ static unsigned opt_unsigned(const char *key, unsigned fallback)
     return (unsigned)n;
 }
 
+/* Scale options are written as `2x`, but a bare number is accepted too. */
+static unsigned opt_scale(const char *key, unsigned fallback)
+{
+    unsigned n = opt_unsigned(key, fallback);
+
+    if (n < 1u || n > 8u)
+        return fallback;
+    return n;
+}
+
 /* Pack DraStic/Seedless config_bits from libretro core options.
  * Layout matches core/src/core/config.c config_unpack_word(). */
 static uint64_t build_config_bits(void)
@@ -301,7 +315,8 @@ static uint64_t build_config_bits(void)
     /* bits 16-19: software 3D raster thread count */
     bits |= (uint64_t)(threads & 0xfu) << 16;
 
-    if (opt_enabled("seedlessds_screen_16bit", 0))
+    /* The 16-bit page layout only exists at 1×; a scaled page is always 32-bit. */
+    if (g_scale <= 1u && opt_enabled("seedlessds_screen_16bit", 0))
         bits |= 1ull << 23; /* FRONTEND_CONFIG_SCREENSHOT_SWAP_RB */
     if (opt_enabled("seedlessds_ignore_gamecard_limit", 0))
         bits |= 1ull << 24;
@@ -331,7 +346,7 @@ static uint64_t build_config_bits(void)
         bits |= 1ull << 39;
     if (opt_enabled("seedlessds_disable_edge_marking", 0))
         bits |= 1ull << 40;
-    if (opt_enabled("seedlessds_hires_3d", 0))
+    if (opt_enabled("seedlessds_hires_3d", 0) || g_scale > 1u)
         bits |= 1ull << 41;
     if (opt_enabled("seedlessds_lua", 0))
         bits |= 1ull << 42;
@@ -507,15 +522,23 @@ static void move_stylus_from_stick(unsigned index)
     clamp_stylus();
 }
 
-static void put_fb_px(uint32_t *fb, int x, int y, uint32_t color)
+static void put_fb_px(uint32_t *fb, unsigned stride, unsigned scale, int x, int y,
+                      uint32_t color)
 {
+    unsigned dx, dy;
+
     if (x < 0 || y < 0 || x >= SEEDLESS_SCREEN_W || y >= SEEDLESS_FB_H)
         return;
-    fb[y * SEEDLESS_SCREEN_W + x] = color;
+    for (dy = 0; dy < scale; dy++) {
+        for (dx = 0; dx < scale; dx++) {
+            fb[((size_t)y * scale + dy) * stride + (size_t)x * scale + dx] = color;
+        }
+    }
 }
 
-static void draw_stylus_cursor(uint32_t *fb, int touching)
+static void draw_stylus_cursor(uint32_t *fb, int touching, unsigned scale)
 {
+    unsigned stride = SEEDLESS_SCREEN_W * scale;
     int cx = (int)(g_stylus_x + 0.5f);
     int cy = (int)(g_stylus_y + 0.5f) + SEEDLESS_SCREEN_H;
     uint32_t ink = touching ? 0x00FF4040u : 0x00F0F0F0u;
@@ -523,14 +546,15 @@ static void draw_stylus_cursor(uint32_t *fb, int touching)
     int i;
 
     for (i = -7; i <= 7; i++) {
-        put_fb_px(fb, cx + i, cy - 1, edge);
-        put_fb_px(fb, cx + i, cy + 1, edge);
-        put_fb_px(fb, cx - 1, cy + i, edge);
-        put_fb_px(fb, cx + 1, cy + i, edge);
-        put_fb_px(fb, cx + i, cy, ink);
-        put_fb_px(fb, cx, cy + i, ink);
+        put_fb_px(fb, stride, scale, cx + i, cy - 1, edge);
+        put_fb_px(fb, stride, scale, cx + i, cy + 1, edge);
+        put_fb_px(fb, stride, scale, cx - 1, cy + i, edge);
+        put_fb_px(fb, stride, scale, cx + 1, cy + i, edge);
+        put_fb_px(fb, stride, scale, cx + i, cy, ink);
+        put_fb_px(fb, stride, scale, cx, cy + i, ink);
     }
-    put_fb_px(fb, cx, cy, touching ? 0x00FFFFFFu : 0x00FF2020u);
+    put_fb_px(fb, stride, scale, cx, cy,
+              touching ? 0x00FFFFFFu : 0x00FF2020u);
 }
 
 static void poll_touch(nds_input_t *input)
@@ -609,25 +633,63 @@ static void poll_touch(nds_input_t *input)
     }
 }
 
+static int ensure_frame_buffer(unsigned scale)
+{
+    size_t pixels = (size_t)SEEDLESS_SCREEN_W * scale * SEEDLESS_FB_H * scale;
+    uint32_t *buf;
+
+    if (pixels <= g_frame_pixels)
+        return 1;
+    buf = realloc(g_frame, pixels * sizeof(uint32_t));
+    if (!buf)
+        return 0;
+    g_frame = buf;
+    g_frame_pixels = pixels;
+    return 1;
+}
+
 static void present_video(void)
 {
     const size_t screen_pixels = SEEDLESS_SCREEN_W * SEEDLESS_SCREEN_H;
-    uint32_t *top_dst = g_frame;
-    uint32_t *bottom_dst = g_frame + screen_pixels;
+    unsigned scale = g_scale;
+    unsigned width = SEEDLESS_SCREEN_W * scale;
+    unsigned height = SEEDLESS_FB_H * scale;
+    uint32_t *frame;
 
-    if (!nds_screens_rgba(g_nds, top_dst, bottom_dst)) {
+    if (!ensure_frame_buffer(scale)) {
+        scale = 1;
+        width = SEEDLESS_SCREEN_W;
+        height = SEEDLESS_FB_H;
+    }
+    frame = g_frame;
+    if (!frame)
+        return;
+
+    if (scale > 1u && g_nds &&
+        nds_screens_rgba_scale(g_nds, frame,
+                               frame + (size_t)width * SEEDLESS_SCREEN_H * scale,
+                               scale)) {
+        if (g_cursor_from_stick)
+            draw_stylus_cursor(frame, g_stylus_touching, scale);
+        video_cb(frame, width, height, width * sizeof(uint32_t));
+        return;
+    }
+
+    /* 1×, or a fallback when the core cannot expose scaled pages (the 16-bit
+     * colour path keeps its own layout). */
+    if (!nds_screens_rgba(g_nds, frame, frame + screen_pixels)) {
         const void *top = NULL, *bottom = NULL;
         nds_screen_buffers(g_nds, &top, &bottom);
         if (!top || !bottom)
             return;
-        memcpy(top_dst, top, screen_pixels * sizeof *top_dst);
-        memcpy(bottom_dst, bottom, screen_pixels * sizeof *bottom_dst);
+        memcpy(frame, top, screen_pixels * sizeof *frame);
+        memcpy(frame + screen_pixels, bottom, screen_pixels * sizeof *frame);
     }
 
     if (g_cursor_from_stick)
-        draw_stylus_cursor(g_frame, g_stylus_touching);
+        draw_stylus_cursor(frame, g_stylus_touching, 1u);
 
-    video_cb(g_frame, SEEDLESS_SCREEN_W, SEEDLESS_FB_H,
+    video_cb(frame, SEEDLESS_SCREEN_W, SEEDLESS_FB_H,
              SEEDLESS_SCREEN_W * sizeof(uint32_t));
 }
 
@@ -735,6 +797,9 @@ void retro_init(void)
     seedless_mic_reset();
     open_microphone();
     set_seedless_root();
+    /* Options are seeded before retro_init, so the resolution is already
+     * known when the frontend asks for the AV geometry. */
+    g_scale = opt_scale("seedlessds_resolution", 1);
     g_nds = NULL;
     g_emu_running = 0;
     g_emu_started = 0;
@@ -760,11 +825,15 @@ void retro_get_system_info(struct retro_system_info *info)
 
 void retro_get_system_av_info(struct retro_system_av_info *info)
 {
+    unsigned scale = g_scale ? g_scale : 1u;
+    unsigned width = SEEDLESS_SCREEN_W * scale;
+    unsigned height = SEEDLESS_FB_H * scale;
+
     memset(info, 0, sizeof(*info));
-    info->geometry.base_width = SEEDLESS_SCREEN_W;
-    info->geometry.base_height = SEEDLESS_FB_H;
-    info->geometry.max_width = SEEDLESS_SCREEN_W;
-    info->geometry.max_height = SEEDLESS_FB_H;
+    info->geometry.base_width = width;
+    info->geometry.base_height = height;
+    info->geometry.max_width = width;
+    info->geometry.max_height = height;
     info->geometry.aspect_ratio =
         (float)SEEDLESS_SCREEN_W / (float)SEEDLESS_FB_H;
     info->timing.fps = 59.8261;
@@ -1070,9 +1139,14 @@ bool retro_load_game(const struct retro_game_info *info)
     environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &fmt);
     environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, desc);
     set_seedless_root();
+    g_scale = opt_scale("seedlessds_resolution", 1);
     apply_core_options(0);
 
     snprintf(g_rom_path, sizeof g_rom_path, "%s", info->path);
+
+    /* The page layout and the 3D raster size are fixed when the emulator is
+     * created, so the requested resolution has to be in place first. */
+    nds_set_internal_resolution(NULL, g_scale);
 
     g_nds = nds_create(NULL, 0, 0);
     if (!g_nds) {
