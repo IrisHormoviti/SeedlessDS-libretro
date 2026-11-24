@@ -1166,6 +1166,17 @@ void gpu3d_geometry_clip_polygon(gpu3d_t *ctx, const uint8_t *desc, uint32_t n) 
         else        { idx[2] = base + 3u; idx[3] = base + 2u; }
     }
 
+    /* Clipping drops a polygon when every vertex is outside the same plane.
+     * Reject that case from the cached clip codes before copying vertices to
+     * the temporary buffers and walking the plane-by-plane clipper below. */
+    if (n != 0) {
+        uint8_t common = 0x3fu;
+        for (uint32_t i = 0; i < n; i++)
+            common &= ctx->clip_code[idx[i]];
+        if (common != 0)
+            return;
+    }
+
     if (n != 0) {
         for (uint32_t i = 0; i < n; i++) {
             uint32_t j = idx[i];
