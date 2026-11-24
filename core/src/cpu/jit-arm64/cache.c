@@ -1332,41 +1332,43 @@ void *jit_cache_lookup_or_compile(void *ctx, uint32_t dir)
     LOOKUP_RETURN(updated, noff);
 }
 
-/* A slow ARM LDM may contain several reads from ordinary main RAM, for
- * example after one of its pages was first reached through the bus helper.
- * Keep the normal bus path for TCM, I/O, translated regions, and ranges that
- * cross out of main RAM. For a fully ordinary RAM range, amortize the bus
- * helper over the transfer and retain its page-table population semantics. */
+/* A slow ARM LDM may contain several reads from directly mapped memory, for
+ * example after its first word reached a page through the bus helper. Keep
+ * the normal path for translated/handled regions, TCM overlays, and ranges
+ * crossing an 8 MiB bus region. For a contiguous direct range, populate the
+ * page-table descriptors once per page, then perform the words directly. */
 int jit_ldm_main_ram_words(void *ctx, uint32_t address, uint32_t count,
                            uint32_t *destination)
 {
     arm_t *cpu = (arm_t *)ctx;
+    if (!cpu)
+        return 0;
     bus_t *bus = cpu->bus;
     pagetable_t *table = &cpu->pagetable;
-    if (!bus || !bus->main_ram || !destination || count < 2 || count > 16 ||
-        (address & 3u) || (address >> 24) != 2u)
+    if (!bus || !table->region || !destination || count < 2 || count > 16 ||
+        (address & 3u) || (address >> 28) != 0)
         return 0;
 
     uint32_t last = address + count * 4u - 1u;
-    if (last < address || (last >> 24) != 2u)
+    if (last < address || (last >> 28) != 0 ||
+        (address >> BUS_REGION_SHIFT) != (last >> BUS_REGION_SHIFT))
         return 0;
 
     if (cpu->is_arm9 && bus->dtcm_end > bus->dtcm_start &&
         (uint64_t)address < bus->dtcm_end && (uint64_t)last + 1u > bus->dtcm_start)
         return 0;
 
-    uint32_t first_region = address >> BUS_REGION_SHIFT;
-    uint32_t last_region = last >> BUS_REGION_SHIFT;
-    for (uint32_t region = first_region; region <= last_region; region++) {
-        const bus_region_t *entry = &table->region[region];
-        if (entry->read_kind != BUS_REGION_DIRECT ||
-            entry->read_memory != bus->main_ram || entry->mask != NDS_MAIN_RAM_SIZE - 1u)
-            return 0;
-    }
+    /* The ARM9 ITCM overlays the low address range outside bus regions. */
+    if (cpu->is_arm9 && address < bus->itcm_size)
+        return 0;
+
+    const bus_region_t *entry = &table->region[address >> BUS_REGION_SHIFT];
+    if (entry->read_kind != BUS_REGION_DIRECT || !entry->read_memory)
+        return 0;
 
     /* A normal bus read refreshes the descriptor even when it contains the
      * nonzero slow-access sentinel. Repeat it once per touched 2 KiB page;
-     * all words in that page have the same direct RAM mapping. */
+     * all words in that page share this region's direct mapping. */
     uint32_t page = address & ~((1u << PAGETABLE_PAGE_SHIFT) - 1u);
     for (;;) {
         (void)bus_read32_slow((uint8_t *)table, page);
@@ -1376,7 +1378,7 @@ int jit_ldm_main_ram_words(void *ctx, uint32_t address, uint32_t count,
     }
 
     for (uint32_t i = 0; i < count; i++)
-        destination[i] = rd32(bus->main_ram + ((address + i * 4u) & (NDS_MAIN_RAM_SIZE - 1u)));
+        destination[i] = rd32(entry->read_memory + ((address + i * 4u) & entry->mask));
     return 1;
 }
 
