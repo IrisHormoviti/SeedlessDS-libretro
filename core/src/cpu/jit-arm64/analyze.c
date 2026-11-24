@@ -79,6 +79,8 @@ uint32_t *jit_block_analyze(void *ctx_v, uint32_t dir, uint32_t thumb_arg)
 {
 
     unsigned char *ctx = (unsigned char *)ctx_v;
+    uint32_t native_pc = dir | (thumb_arg & 1u);
+    jit_native_cache_compile_begin(ctx, native_pc);
     jit_block_analysis_t d;
 
     uint32_t w0, w1, w3, w8, w9, w10, w11, w12, w13, w14, w15, w16, w17;
@@ -109,6 +111,7 @@ uint32_t *jit_block_analyze(void *ctx_v, uint32_t dir, uint32_t thumb_arg)
         if (f(obj, ent, dir) == 0) {
 
             free_core(NULL);
+            jit_native_cache_compile_end(ctx, native_pc, NULL);
             return (uint32_t *)0;
         }
     }
@@ -1355,6 +1358,7 @@ L37980: ;
     if (records_heap)
         free_core(d.records);
 
+    jit_native_cache_compile_end(ctx, native_pc, (uint8_t *)result);
     return result;
 }
 #undef EXTS1

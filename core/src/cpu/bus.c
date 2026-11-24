@@ -1657,6 +1657,8 @@ static void mark_range_bits(unsigned char *bitmap,
 void bus_range_mark_written(unsigned char *ctx, uint32_t address, uint32_t size)
 {
 
+    jit_native_cache_note_range(ctx, address, size);
+
     unsigned char *core_ptr = (unsigned char *)((arm_t *)ctx)->pagetable.bus;
 
     uint32_t end_addr   = address + size;

@@ -157,11 +157,15 @@ void jit_warm_cache_preload(unsigned char *machine, int allow);
 void jit_warm_cache_record(void *ctx, uint32_t pc);
 void jit_warm_cache_sample(void *ctx, uint32_t pc);
 void jit_warm_cache_save(void);
+void jit_native_cache_compile_begin(void *ctx, uint32_t pc);
+void jit_native_cache_compile_end(void *ctx, uint32_t pc, uint8_t *entry);
+void jit_native_cache_note_range(void *ctx, uint32_t address, uint32_t size);
 int jit_stm_gxfifo_words(void *ctx, uint32_t address, uint32_t count,
                          const uint32_t *source);
 void jit_warm_cache_profile_read(uint64_t *loaded, uint64_t *signature_skips,
                                  uint64_t *already_compiled, uint64_t *candidates,
-                                 uint64_t *compiled_blocks);
+                                 uint64_t *compiled_blocks,
+                                 uint64_t *native_blocks_restored);
 void jit_profile_reset(void);
 void jit_profile_read(uint64_t *blocks, uint64_t *analysis_us);
 void jit_dispatch_profile_read(uint64_t *primary_misses, uint64_t *secondary_hits);

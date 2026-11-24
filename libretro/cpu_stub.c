@@ -94,15 +94,34 @@ void jit_warm_cache_record(void *ctx, uint32_t pc)
     (void)pc;
 }
 void jit_warm_cache_save(void) {}
+void jit_native_cache_compile_begin(void *ctx, uint32_t pc)
+{
+    (void)ctx;
+    (void)pc;
+}
+void jit_native_cache_compile_end(void *ctx, uint32_t pc, uint8_t *entry)
+{
+    (void)ctx;
+    (void)pc;
+    (void)entry;
+}
+void jit_native_cache_note_range(void *ctx, uint32_t address, uint32_t size)
+{
+    (void)ctx;
+    (void)address;
+    (void)size;
+}
 void jit_warm_cache_profile_read(uint64_t *loaded, uint64_t *signature_skips,
                                  uint64_t *already_compiled, uint64_t *candidates,
-                                 uint64_t *compiled_blocks)
+                                 uint64_t *compiled_blocks,
+                                 uint64_t *native_blocks_restored)
 {
     if (loaded) *loaded = 0;
     if (signature_skips) *signature_skips = 0;
     if (already_compiled) *already_compiled = 0;
     if (candidates) *candidates = 0;
     if (compiled_blocks) *compiled_blocks = 0;
+    if (native_blocks_restored) *native_blocks_restored = 0;
 }
 
 void jit_profile_reset(void) {}

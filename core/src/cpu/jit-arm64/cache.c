@@ -22,12 +22,24 @@ uint64_t jit_block_lookup_secondary[2][ARM_BLOCK_LOOKUP]
     __attribute__((visibility("hidden"), aligned(64)));
 
 static void *jit_block_lookup_cached(void *ctx, uint32_t pc);
+static void flush_cache_range(const uint8_t *first, const uint8_t *last);
+static uint64_t jit_native_mapping_signature(const nds_t *nds);
+static uint64_t jit_native_hash_u64(uint64_t hash, uint64_t value);
 
 #define JIT_WARM_CACHE_MAGIC 0x574a5344u
 #define JIT_WARM_CACHE_VERSION 3u
 #define JIT_WARM_CACHE_MAX_ENTRIES 256u
 #define JIT_WARM_CACHE_PREWARM_ENTRIES JIT_WARM_CACHE_MAX_ENTRIES
 #define JIT_WARM_CACHE_SIGNATURE_HALFWORDS 4u
+#define JIT_NATIVE_CACHE_MAGIC 0x4e4a5344u
+#define JIT_NATIVE_CACHE_VERSION 2u
+#ifndef SEEDLESS_JIT_NATIVE_CACHE_ABI
+#define SEEDLESS_JIT_NATIVE_CACHE_ABI UINT64_C(0)
+#endif
+#define JIT_NATIVE_CACHE_MAX_BLOCKS 0x8000u
+#define JIT_NATIVE_CACHE_MAX_DEPENDENCIES 0x20000u
+#define JIT_NATIVE_CACHE_MAX_BLOCK_DEPENDENCIES 16u
+#define JIT_NATIVE_CACHE_COMPILE_DEPTH 64u
 
 typedef struct jit_warm_cache_entry {
     uint32_t pc;
@@ -46,6 +58,69 @@ typedef struct jit_warm_cache_header {
     uint32_t entries_crc;
 } jit_warm_cache_header_t;
 
+/* Native blocks contain relative branches into the core and arena. Restore is
+ * allowed only for this exact emitter ABI, ROM, and a complete set of guest
+ * instruction signatures. Keep metadata separate from the arena so pointers
+ * can be rebased and all guest/JIT invalidation maps can be restored. */
+typedef struct jit_native_cache_header {
+    uint32_t magic;
+    uint32_t version;
+    uint64_t abi;
+    uint32_t game_code;
+    uint32_t rom_size;
+    uint32_t header_crc;
+    uint32_t block_count;
+    uint32_t dependency_count;
+    uint32_t arena_size;
+    uint32_t aux_size;
+    uint32_t payload_crc;
+    uint64_t mapping_signature;
+} jit_native_cache_header_t;
+
+typedef struct jit_native_cache_block {
+    uint32_t pc;
+    uint32_t dependency_first;
+    uint16_t halfwords;
+    uint8_t cpu;
+    uint8_t dependency_count;
+    uint64_t signature;
+} jit_native_cache_block_t;
+
+typedef struct jit_native_cache_dependency {
+    uint32_t address;
+    uint32_t size;
+    uint64_t signature;
+} jit_native_cache_dependency_t;
+
+typedef struct jit_native_compile_frame {
+    void *cpu;
+    uint32_t pc;
+    uint32_t dependency_count;
+    struct {
+        uint32_t address;
+        uint32_t size;
+    } dependencies[JIT_NATIVE_CACHE_MAX_BLOCK_DEPENDENCIES];
+} jit_native_compile_frame_t;
+
+typedef struct jit_native_cache_aux {
+    uint32_t arm9_itcm_arm[ARM_ITCM_ARM_BLOCKS];
+    uint32_t arm9_itcm_thumb[ARM_ITCM_THUMB_BLOCKS];
+    uint32_t arm9_page_bits[0x1000];
+    uint32_t arm9_group_bits[0x80];
+    uint32_t arm7_page_bits[0x1000];
+    uint32_t arm7_group_bits[0x80];
+    uint32_t main_ram_page_bits[0x40];
+    uint32_t itcm_page_bits;
+    uint32_t shared_wram_page_bits;
+    uint32_t arm7_wram_page_bits;
+    uint32_t vram_page_bits[BUS_VRAM_BITMAP_WORDS];
+    uint8_t main_ram_code_bits[0x40000];
+    uint32_t itcm_code_bits[0x200];
+    uint8_t shared_wram_code_bits[0x800];
+    uint8_t arm7_wram_code_bits[0x1000];
+    uint8_t vram_code_bits[0xa400];
+} jit_native_cache_aux_t;
+
 static jit_warm_cache_entry_t jit_warm_cache_entries[JIT_WARM_CACHE_MAX_ENTRIES];
 static jit_warm_cache_entry_t jit_warm_cache_preload_entries[JIT_WARM_CACHE_PREWARM_ENTRIES];
 static uint32_t jit_warm_cache_count;
@@ -55,12 +130,25 @@ static uint32_t jit_warm_cache_rom_size;
 static uint32_t jit_warm_cache_header_crc;
 static uint8_t jit_warm_cache_enabled;
 static char jit_warm_cache_path[0x410];
+static char jit_native_cache_path[0x410];
+static jit_native_cache_block_t jit_native_cache_blocks[JIT_NATIVE_CACHE_MAX_BLOCKS];
+static jit_native_cache_dependency_t
+    jit_native_cache_dependencies[JIT_NATIVE_CACHE_MAX_DEPENDENCIES];
+static jit_native_compile_frame_t
+    jit_native_compile_frames[JIT_NATIVE_CACHE_COMPILE_DEPTH];
+static uint32_t jit_native_cache_block_count;
+static uint32_t jit_native_cache_dependency_count;
+static uint32_t jit_native_compile_depth;
+static uint32_t jit_native_compile_overflow_depth;
+static uint8_t jit_native_cache_complete;
+static uint64_t jit_native_cache_initial_mapping_signature;
 #if defined(SEEDLESS_JIT_PROFILE)
 static uint64_t jit_warm_profile_loaded;
 static uint64_t jit_warm_profile_signature_skips;
 static uint64_t jit_warm_profile_already_compiled;
 static uint64_t jit_warm_profile_candidates;
 static uint64_t jit_warm_profile_compiled_blocks;
+static uint64_t jit_warm_profile_native_blocks_restored;
 static uint8_t jit_warm_profile_preloading;
 #endif
 
@@ -70,6 +158,22 @@ void jit_warm_cache_clear(void)
     jit_warm_cache_count = 0;
     jit_warm_cache_preload_count = 0;
     jit_warm_cache_path[0] = 0;
+    jit_native_cache_path[0] = 0;
+    jit_native_cache_block_count = 0;
+    jit_native_cache_dependency_count = 0;
+    jit_native_compile_depth = 0;
+    jit_native_compile_overflow_depth = 0;
+    jit_native_cache_complete = 0;
+    jit_native_cache_initial_mapping_signature = 0;
+#if defined(SEEDLESS_JIT_PROFILE)
+    jit_warm_profile_loaded = 0;
+    jit_warm_profile_signature_skips = 0;
+    jit_warm_profile_already_compiled = 0;
+    jit_warm_profile_candidates = 0;
+    jit_warm_profile_compiled_blocks = 0;
+    jit_warm_profile_native_blocks_restored = 0;
+    jit_warm_profile_preloading = 0;
+#endif
 }
 
 static uint32_t jit_warm_cache_signature(void *ctx, uint32_t pc)
@@ -79,10 +183,10 @@ static uint32_t jit_warm_cache_signature(void *ctx, uint32_t pc)
     uint32_t signature = 2166136261u;
     for (uint32_t i = 0; i < JIT_WARM_CACHE_SIGNATURE_HALFWORDS; i++) {
         uint32_t at = address + i * 2u;
-        uint64_t base = table->page[at >> PAGETABLE_PAGE_SHIFT] << 2;
-        uint16_t halfword = base
-            ? *(const uint16_t *)(uintptr_t)(base + at)
-            : (uint16_t)bus_read16((unsigned char *)table, at);
+        uint64_t page = table->page[at >> PAGETABLE_PAGE_SHIFT];
+        uint16_t halfword = (page == 0 || page == PAGETABLE_MISSING)
+            ? (uint16_t)bus_read16((unsigned char *)table, at)
+            : *(const uint16_t *)(uintptr_t)((page << 2) + at);
         signature = (signature ^ (uint8_t)halfword) * 16777619u;
         signature = (signature ^ (uint8_t)(halfword >> 8)) * 16777619u;
     }
@@ -97,6 +201,688 @@ static uint32_t jit_warm_cache_entries_crc(const jit_warm_cache_entry_t *entries
     for (uint32_t i = 0; i < count * (uint32_t)sizeof(*entries); i++)
         crc = (crc ^ bytes[i]) * 16777619u;
     return crc;
+}
+
+static uint32_t jit_native_cache_crc(const void *data, size_t size)
+{
+    uint32_t crc = 2166136261u;
+    const uint8_t *bytes = (const uint8_t *)data;
+    for (size_t i = 0; i < size; i++)
+        crc = (crc ^ bytes[i]) * 16777619u;
+    return crc;
+}
+
+static uint64_t jit_native_guest_signature(void *ctx, uint32_t pc,
+                                           uint16_t halfwords)
+{
+    pagetable_t *table = PT(ctx);
+    uint64_t hash = UINT64_C(14695981039346656037);
+    uint32_t address = pc & ~1u;
+    for (uint32_t i = 0; i < halfwords; i++) {
+        uint32_t at = address + i * 2u;
+        uint64_t page = table->page[at >> PAGETABLE_PAGE_SHIFT];
+        uint64_t base = page << 2;
+        uint16_t halfword = (page == 0 || page == PAGETABLE_MISSING)
+            ? (uint16_t)bus_read16((unsigned char *)table, at)
+            : *(const uint16_t *)(uintptr_t)(base + at);
+        hash = (hash ^ (uint8_t)halfword) * UINT64_C(1099511628211);
+        hash = (hash ^ (uint8_t)(halfword >> 8)) * UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+static int jit_native_dependency_supported(void *ctx, uint32_t address,
+                                           uint32_t size)
+{
+    if (size == 0 || size > 0x10000u || address + size < address)
+        return 0;
+    pagetable_t *table = PT(ctx);
+    uint32_t end = address + size - 1;
+    if ((address >> 28) != 0) {
+        uint32_t first_page = address >> PAGETABLE_PAGE_SHIFT;
+        uint32_t last_page = end >> PAGETABLE_PAGE_SHIFT;
+        for (uint32_t page = first_page; page <= last_page; page++)
+            if (table->page[page] == 0 ||
+                table->page[page] == PAGETABLE_MISSING)
+                return 0;
+        return 1;
+    }
+    for (uint32_t at = address;;) {
+        uint32_t index = at >> BUS_REGION_SHIFT;
+        if (index >= BUS_ARM9_REGIONS ||
+            table->region[index].read_kind == BUS_REGION_HANDLED)
+            return 0;
+        if (table->region[index].read_kind == BUS_REGION_IGNORED) {
+            uint32_t first_page = address >> PAGETABLE_PAGE_SHIFT;
+            uint32_t last_page = end >> PAGETABLE_PAGE_SHIFT;
+            for (uint32_t page = first_page; page <= last_page; page++)
+                if (table->page[page] == 0 ||
+                    table->page[page] == PAGETABLE_MISSING)
+                    return 0;
+            return 1;
+        }
+        uint32_t next = ((at >> BUS_REGION_SHIFT) + 1u) << BUS_REGION_SHIFT;
+        if (next == 0 || next > end)
+            break;
+        at = next;
+    }
+    return 1;
+}
+
+static uint64_t jit_native_memory_signature(void *ctx, uint32_t address,
+                                             uint32_t size)
+{
+    pagetable_t *table = PT(ctx);
+    uint64_t hash = UINT64_C(14695981039346656037);
+    hash = jit_native_hash_u64(hash, address);
+    hash = jit_native_hash_u64(hash, size);
+    for (uint32_t i = 0; i < size; i++) {
+        uint32_t at = address + i;
+        uint64_t page = table->page[at >> PAGETABLE_PAGE_SHIFT];
+        uint64_t base = page << 2;
+        uint8_t value = (page == 0 || page == PAGETABLE_MISSING)
+            ? (uint8_t)bus_read8((unsigned char *)table, at)
+            : *(const uint8_t *)(uintptr_t)(base + at);
+        hash = (hash ^ value) * UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+void jit_native_cache_compile_begin(void *ctx, uint32_t pc)
+{
+    if (!jit_warm_cache_enabled)
+        return;
+    if (jit_native_compile_overflow_depth != 0) {
+        jit_native_compile_overflow_depth++;
+        jit_native_cache_complete = 0;
+        return;
+    }
+    if (jit_native_compile_depth == JIT_NATIVE_CACHE_COMPILE_DEPTH) {
+        jit_native_compile_overflow_depth = 1;
+        jit_native_cache_complete = 0;
+        return;
+    }
+    jit_native_compile_frame_t *frame =
+        &jit_native_compile_frames[jit_native_compile_depth++];
+    frame->cpu = ctx;
+    frame->pc = pc;
+    frame->dependency_count = 0;
+}
+
+void jit_native_cache_note_range(void *ctx, uint32_t address, uint32_t size)
+{
+    if (!jit_warm_cache_enabled || jit_native_compile_overflow_depth != 0 ||
+        jit_native_compile_depth == 0)
+        return;
+    jit_native_compile_frame_t *frame =
+        &jit_native_compile_frames[jit_native_compile_depth - 1];
+    if (frame->cpu != ctx)
+        return;
+    if (!jit_native_dependency_supported(ctx, address, size)) {
+        jit_native_cache_complete = 0;
+        return;
+    }
+    for (uint32_t i = 0; i < frame->dependency_count; i++) {
+        if (frame->dependencies[i].address == address &&
+            frame->dependencies[i].size == size)
+            return;
+    }
+    if (frame->dependency_count == JIT_NATIVE_CACHE_MAX_BLOCK_DEPENDENCIES) {
+        jit_native_cache_complete = 0;
+        return;
+    }
+    frame->dependencies[frame->dependency_count].address = address;
+    frame->dependencies[frame->dependency_count].size = size;
+    frame->dependency_count++;
+}
+
+static void jit_native_cache_record(void *ctx, uint32_t pc, uint8_t *entry,
+                                    const jit_native_compile_frame_t *frame)
+{
+    if (!jit_warm_cache_enabled || !ctx || !entry || !jit_native_cache_complete)
+        return;
+
+    jit_arena_t *arena = CPU(ctx)->jit_arena;
+    uint8_t *base = (uint8_t *)arena;
+    uintptr_t entry_address = (uintptr_t)entry;
+    uintptr_t arena_address = (uintptr_t)base;
+    if (entry_address < arena_address + sizeof(uint32_t) ||
+        entry_address >= arena_address + sizeof(*arena)) {
+        jit_native_cache_complete = 0;
+        return;
+    }
+    uint32_t header_offset = rd32(entry - sizeof(uint32_t));
+    if (header_offset > sizeof(*arena) - sizeof(jit_block_header_t)) {
+        jit_native_cache_complete = 0;
+        return;
+    }
+    const jit_block_header_t *header =
+        (const jit_block_header_t *)(base + header_offset);
+    uint16_t halfwords = header->flags & JIT_BLOCK_HEADER_HALFWORDS_MASK;
+    if (!halfwords || (header->pc & ~1u) != (pc & ~1u)) {
+        jit_native_cache_complete = 0;
+        return;
+    }
+    if (!frame || frame->dependency_count == 0 ||
+        jit_native_cache_dependency_count + frame->dependency_count >
+            JIT_NATIVE_CACHE_MAX_DEPENDENCIES) {
+        jit_native_cache_complete = 0;
+        return;
+    }
+
+    uint8_t cpu = CPU(ctx)->is_arm9 != 0;
+    uint32_t i = 0;
+    for (; i < jit_native_cache_block_count; i++) {
+        jit_native_cache_block_t *block = &jit_native_cache_blocks[i];
+        if (block->pc == pc && block->cpu == cpu)
+            break;
+    }
+    if (i == JIT_NATIVE_CACHE_MAX_BLOCKS) {
+        jit_native_cache_complete = 0;
+        return;
+    }
+    uint32_t first_dependency = jit_native_cache_dependency_count;
+    for (uint32_t d = 0; d < frame->dependency_count; d++) {
+        uint32_t address = frame->dependencies[d].address;
+        uint32_t size = frame->dependencies[d].size;
+        jit_native_cache_dependencies[jit_native_cache_dependency_count++] =
+            (jit_native_cache_dependency_t){
+                address, size, jit_native_memory_signature(ctx, address, size)
+            };
+    }
+    if (i == jit_native_cache_block_count)
+        jit_native_cache_block_count++;
+    jit_native_cache_blocks[i] = (jit_native_cache_block_t){
+        pc, first_dependency, halfwords, cpu,
+        (uint8_t)frame->dependency_count,
+        jit_native_guest_signature(ctx, pc, halfwords)
+    };
+}
+
+void jit_native_cache_compile_end(void *ctx, uint32_t pc, uint8_t *entry)
+{
+    if (!jit_warm_cache_enabled)
+        return;
+    if (jit_native_compile_overflow_depth != 0) {
+        jit_native_compile_overflow_depth--;
+        return;
+    }
+    if (jit_native_compile_depth == 0) {
+        jit_native_cache_complete = 0;
+        return;
+    }
+    jit_native_compile_frame_t frame =
+        jit_native_compile_frames[--jit_native_compile_depth];
+    if (frame.cpu != ctx || frame.pc != pc) {
+        jit_native_cache_complete = 0;
+        return;
+    }
+    if (entry && jit_native_cache_complete)
+        jit_native_cache_record(ctx, pc, entry, &frame);
+}
+
+static void jit_native_cache_capture_aux(nds_t *nds, jit_native_cache_aux_t *aux)
+{
+    bus_t *bus = &nds->bus;
+    memcpy(aux->arm9_itcm_arm, nds->arm9.itcm_arm_blocks,
+           sizeof aux->arm9_itcm_arm);
+    memcpy(aux->arm9_itcm_thumb, nds->arm9.itcm_thumb_blocks,
+           sizeof aux->arm9_itcm_thumb);
+    memcpy(aux->arm9_page_bits, nds->arm9.pagetable.page_bits,
+           sizeof aux->arm9_page_bits);
+    memcpy(aux->arm9_group_bits, nds->arm9.pagetable.group_bits,
+           sizeof aux->arm9_group_bits);
+    memcpy(aux->arm7_page_bits, nds->arm7.pagetable.page_bits,
+           sizeof aux->arm7_page_bits);
+    memcpy(aux->arm7_group_bits, nds->arm7.pagetable.group_bits,
+           sizeof aux->arm7_group_bits);
+    memcpy(aux->main_ram_page_bits, bus->main_ram_page_bits,
+           sizeof aux->main_ram_page_bits);
+    aux->itcm_page_bits = bus->itcm_page_bits;
+    aux->shared_wram_page_bits = bus->shared_wram_page_bits;
+    aux->arm7_wram_page_bits = bus->arm7_wram_page_bits;
+    memcpy(aux->vram_page_bits, bus->vram_page_bits,
+           sizeof aux->vram_page_bits);
+    memcpy(aux->main_ram_code_bits, bus->main_ram_code_bits,
+           sizeof aux->main_ram_code_bits);
+    memcpy(aux->itcm_code_bits, bus->itcm_code_bits,
+           sizeof aux->itcm_code_bits);
+    memcpy(aux->shared_wram_code_bits, bus->shared_wram_code_bits,
+           sizeof aux->shared_wram_code_bits);
+    memcpy(aux->arm7_wram_code_bits, bus->arm7_wram_code_bits,
+           sizeof aux->arm7_wram_code_bits);
+    memcpy(aux->vram_code_bits, bus->vram_code_bits,
+           sizeof aux->vram_code_bits);
+}
+
+static void jit_native_cache_apply_aux(nds_t *nds,
+                                       const jit_native_cache_aux_t *aux)
+{
+    bus_t *bus = &nds->bus;
+    memcpy(nds->arm9.itcm_arm_blocks, aux->arm9_itcm_arm,
+           sizeof aux->arm9_itcm_arm);
+    memcpy(nds->arm9.itcm_thumb_blocks, aux->arm9_itcm_thumb,
+           sizeof aux->arm9_itcm_thumb);
+    memcpy(nds->arm9.pagetable.page_bits, aux->arm9_page_bits,
+           sizeof aux->arm9_page_bits);
+    memcpy(nds->arm9.pagetable.group_bits, aux->arm9_group_bits,
+           sizeof aux->arm9_group_bits);
+    memcpy(nds->arm7.pagetable.page_bits, aux->arm7_page_bits,
+           sizeof aux->arm7_page_bits);
+    memcpy(nds->arm7.pagetable.group_bits, aux->arm7_group_bits,
+           sizeof aux->arm7_group_bits);
+    memcpy(bus->main_ram_page_bits, aux->main_ram_page_bits,
+           sizeof aux->main_ram_page_bits);
+    bus->itcm_page_bits = aux->itcm_page_bits;
+    bus->shared_wram_page_bits = aux->shared_wram_page_bits;
+    bus->arm7_wram_page_bits = aux->arm7_wram_page_bits;
+    memcpy(bus->vram_page_bits, aux->vram_page_bits,
+           sizeof aux->vram_page_bits);
+    memcpy(bus->main_ram_code_bits, aux->main_ram_code_bits,
+           sizeof aux->main_ram_code_bits);
+    memcpy(bus->itcm_code_bits, aux->itcm_code_bits,
+           sizeof aux->itcm_code_bits);
+    memcpy(bus->shared_wram_code_bits, aux->shared_wram_code_bits,
+           sizeof aux->shared_wram_code_bits);
+    memcpy(bus->arm7_wram_code_bits, aux->arm7_wram_code_bits,
+           sizeof aux->arm7_wram_code_bits);
+    memcpy(bus->vram_code_bits, aux->vram_code_bits,
+           sizeof aux->vram_code_bits);
+}
+
+static int jit_native_cache_encode_pointer(const uint8_t *base,
+                                           const uint8_t *pointer,
+                                           uint8_t **encoded)
+{
+    uintptr_t start = (uintptr_t)base;
+    uintptr_t value = (uintptr_t)pointer;
+    if (value < start || value - start > sizeof(jit_arena_t))
+        return 0;
+    *encoded = (uint8_t *)(uintptr_t)(value - start);
+    return 1;
+}
+
+static uint64_t jit_native_hash_u64(uint64_t hash, uint64_t value)
+{
+    for (unsigned i = 0; i < sizeof(value); i++) {
+        hash = (hash ^ (uint8_t)value) * UINT64_C(1099511628211);
+        value >>= 8;
+    }
+    return hash;
+}
+
+static int jit_native_normalize_data_pointer(const nds_t *nds, uintptr_t pointer,
+                                             uint64_t *normalized)
+{
+    const bus_t *bus = &nds->bus;
+    const struct {
+        uintptr_t base;
+        size_t size;
+        uint32_t tag;
+    } ranges[] = {
+        { (uintptr_t)nds, NDS_MACHINE_SIZE, 1 },
+        { (uintptr_t)bus->shared_region, 0x4000000u, 2 },
+        { (uintptr_t)bus->address_window, BUS_ADDRESS_WINDOW_BYTES, 3 },
+        { (uintptr_t)bus->vram_region, 0x800000u, 4 },
+        { (uintptr_t)bus->vram_window, 0x800000u, 5 }
+    };
+    if (pointer == 0) {
+        *normalized = 0;
+        return 1;
+    }
+    for (size_t i = 0; i < sizeof ranges / sizeof ranges[0]; i++) {
+        if (!ranges[i].base || pointer < ranges[i].base ||
+            pointer - ranges[i].base >= ranges[i].size)
+            continue;
+        *normalized = ((uint64_t)ranges[i].tag << 56) |
+                      (uint64_t)(pointer - ranges[i].base);
+        return 1;
+    }
+    return 0;
+}
+
+static int jit_native_hash_region_pointer(const nds_t *nds, uint64_t *hash,
+                                          uintptr_t pointer, int is_code)
+{
+    uint64_t normalized;
+    if (!pointer) {
+        *hash = jit_native_hash_u64(*hash, 0);
+        return 1;
+    }
+    if (is_code) {
+        normalized = pointer - (uintptr_t)&jit_native_mapping_signature;
+    } else if (!jit_native_normalize_data_pointer(nds, pointer, &normalized)) {
+        return 0;
+    }
+    *hash = jit_native_hash_u64(*hash, normalized);
+    return 1;
+}
+
+static uint64_t jit_native_mapping_signature(const nds_t *nds)
+{
+    const bus_t *bus = &nds->bus;
+    uint64_t hash = UINT64_C(14695981039346656037);
+    for (uint32_t i = 0; i < BUS_REGIONS; i++) {
+        const bus_region_t *region = &bus->region[i];
+        hash = jit_native_hash_u64(hash, region->mask);
+        hash = jit_native_hash_u64(hash, region->read_kind);
+        hash = jit_native_hash_u64(hash, region->write_kind);
+        if (!jit_native_hash_region_pointer(nds, &hash,
+                (uintptr_t)region->read8, region->read_kind != BUS_REGION_DIRECT) ||
+            !jit_native_hash_region_pointer(nds, &hash,
+                (uintptr_t)region->read16, 1) ||
+            !jit_native_hash_region_pointer(nds, &hash,
+                (uintptr_t)region->read32, 1) ||
+            !jit_native_hash_region_pointer(nds, &hash,
+                (uintptr_t)region->write8, region->write_kind != BUS_REGION_DIRECT) ||
+            !jit_native_hash_region_pointer(nds, &hash,
+                (uintptr_t)region->write16, 1) ||
+            !jit_native_hash_region_pointer(nds, &hash,
+                (uintptr_t)region->write32, 1) ||
+            !jit_native_hash_region_pointer(nds, &hash,
+                (uintptr_t)region->page_bits, 0) ||
+            !jit_native_hash_region_pointer(nds, &hash,
+                (uintptr_t)region->code_bits, 0) ||
+            !jit_native_hash_region_pointer(nds, &hash,
+                (uintptr_t)region->bitmap_lookup[0], 1) ||
+            !jit_native_hash_region_pointer(nds, &hash,
+                (uintptr_t)region->bitmap_lookup[1], 1))
+            return 0;
+    }
+    for (uint32_t i = 0; i < VRAM_BANKS; i++)
+        if (!jit_native_hash_region_pointer(nds, &hash,
+                (uintptr_t)bus->vram_bank[i], 0))
+            return 0;
+    for (uint32_t i = 0; i < 2; i++)
+        for (uint32_t j = 0; j < 2; j++)
+            if (!jit_native_hash_region_pointer(nds, &hash,
+                    (uintptr_t)bus->wram_window[i][j], 0))
+                return 0;
+    hash = jit_native_hash_u64(hash, bus->dtcm_start);
+    hash = jit_native_hash_u64(hash, bus->dtcm_end);
+    hash = jit_native_hash_u64(hash, bus->itcm_size);
+    hash = jit_native_hash_u64(hash, nds->arm9.cp15->dtcm_below_64mb);
+    return hash ? hash : 1;
+}
+
+static int jit_native_cache_try_restore(nds_t *nds)
+{
+    if (!jit_warm_cache_enabled || !jit_native_cache_path[0] ||
+        nds->runtime.jit_enabled == 0 || nds->bus.slot2_rom ||
+        nds->bus.slot2_page_bits || nds->bus.slot2_code_bits ||
+        !jit_native_cache_initial_mapping_signature)
+        return 0;
+
+    size_t (*read_file)(void *, size_t, size_t, void *) =
+        (size_t (*)(void *, size_t, size_t, void *))sym_libc_fread;
+    int (*close_file)(void *) = (int (*)(void *))sym_libc_fclose;
+    void *file = nds_platform_default()->files.open(
+        nds_platform_default()->user, jit_native_cache_path, "rb");
+    if (!file)
+        return 0;
+
+    jit_native_cache_header_t header;
+    int ok = 0;
+    if (read_file(&header, sizeof header, 1, file) != 1 ||
+        header.magic != JIT_NATIVE_CACHE_MAGIC ||
+        header.version != JIT_NATIVE_CACHE_VERSION ||
+        header.abi != SEEDLESS_JIT_NATIVE_CACHE_ABI ||
+        header.game_code != jit_warm_cache_game_code ||
+        header.rom_size != jit_warm_cache_rom_size ||
+        header.header_crc != jit_warm_cache_header_crc ||
+        header.mapping_signature != jit_native_cache_initial_mapping_signature ||
+        header.arena_size != sizeof(jit_arena_t) ||
+        header.aux_size != sizeof(jit_native_cache_aux_t) ||
+        header.block_count == 0 ||
+        header.block_count > JIT_NATIVE_CACHE_MAX_BLOCKS ||
+        header.dependency_count == 0 ||
+        header.dependency_count > JIT_NATIVE_CACHE_MAX_DEPENDENCIES)
+        goto done;
+
+    size_t blocks_size = (size_t)header.block_count * sizeof(jit_native_cache_block_t);
+    size_t dependencies_size = (size_t)header.dependency_count *
+                               sizeof(jit_native_cache_dependency_t);
+    size_t payload_size = sizeof(jit_arena_t) + sizeof(jit_native_cache_aux_t) +
+                          blocks_size + dependencies_size;
+    if (payload_size != header.arena_size + header.aux_size + blocks_size +
+                        dependencies_size)
+        goto done;
+
+    typedef void *(*fn_malloc)(size_t);
+    typedef void (*fn_free)(void *);
+    fn_malloc allocate = (fn_malloc)sym_libc_malloc;
+    fn_free release = (fn_free)sym_libc_free;
+    uint8_t *payload = (uint8_t *)allocate(payload_size);
+    if (!payload)
+        goto done;
+    if (read_file(payload, 1, payload_size, file) != payload_size ||
+        jit_native_cache_crc(payload, payload_size) != header.payload_crc) {
+        release(payload);
+        goto done;
+    }
+
+    jit_arena_t *saved = (jit_arena_t *)payload;
+    jit_native_cache_aux_t *aux =
+        (jit_native_cache_aux_t *)(payload + sizeof(*saved));
+    jit_native_cache_block_t *blocks =
+        (jit_native_cache_block_t *)((uint8_t *)aux + sizeof(*aux));
+    jit_native_cache_dependency_t *dependencies =
+        (jit_native_cache_dependency_t *)((uint8_t *)blocks + blocks_size);
+
+    /* Validate source bytes and all saved offsets before changing live state.
+     * One mismatch rejects the complete snapshot and leaves normal JIT intact. */
+    for (uint32_t i = 0; i < header.block_count; i++) {
+        const jit_native_cache_block_t *block = &blocks[i];
+        arm_t *cpu;
+        if (block->cpu > 1 || block->halfwords == 0 ||
+            block->halfwords > JIT_BLOCK_HEADER_HALFWORDS_MASK) {
+            release(payload);
+            goto done;
+        }
+        cpu = block->cpu ? &nds->arm9 : &nds->arm7;
+        if (jit_native_guest_signature(cpu, block->pc, block->halfwords) !=
+            block->signature) {
+            release(payload);
+            goto done;
+        }
+        if (block->dependency_count == 0 ||
+            block->dependency_count > JIT_NATIVE_CACHE_MAX_BLOCK_DEPENDENCIES ||
+            block->dependency_first > header.dependency_count ||
+            block->dependency_count > header.dependency_count -
+                                      block->dependency_first) {
+            release(payload);
+            goto done;
+        }
+        for (uint32_t d = 0; d < block->dependency_count; d++) {
+            const jit_native_cache_dependency_t *dependency =
+                &dependencies[block->dependency_first + d];
+            if (!jit_native_dependency_supported(cpu, dependency->address,
+                                                  dependency->size) ||
+                jit_native_memory_signature(cpu, dependency->address,
+                                             dependency->size) !=
+                    dependency->signature) {
+                release(payload);
+                goto done;
+            }
+        }
+    }
+
+    for (uint32_t i = 0; i < JIT_REGIONS; i++) {
+        uintptr_t code = (uintptr_t)saved->region[i].code;
+        uintptr_t table = (uintptr_t)saved->region[i].table;
+        if (code > sizeof(*saved) || table > sizeof(*saved)) {
+            release(payload);
+            goto done;
+        }
+    }
+    if ((uintptr_t)saved->record_cursor > sizeof(*saved) ||
+        saved->itcm_variant_count > JIT_ITCM_VARIANTS) {
+        release(payload);
+        goto done;
+    }
+    for (uint32_t i = 0; i < saved->itcm_variant_count; i++) {
+        uintptr_t block = (uintptr_t)saved->itcm_variant[i].block;
+        if (block > sizeof(*saved)) {
+            release(payload);
+            goto done;
+        }
+    }
+
+    jit_arena_t *live = &nds->jit_arena;
+    memcpy(live, saved, sizeof(*live));
+    uint8_t *base = (uint8_t *)live;
+    for (uint32_t i = 0; i < JIT_REGIONS; i++) {
+        live->region[i].code = base + (uintptr_t)live->region[i].code;
+        live->region[i].table = base + (uintptr_t)live->region[i].table;
+    }
+    live->record_cursor = live->records;
+    memset(live->records, 0, sizeof live->records);
+    memset(live->pending_branch, 0, sizeof live->pending_branch);
+    live->pending_branch_count = 0;
+    live->block_pc_count = 0;
+    for (uint32_t i = 0; i < live->itcm_variant_count; i++) {
+        uintptr_t offset = (uintptr_t)live->itcm_variant[i].block;
+        live->itcm_variant[i].block = offset ? base + offset : NULL;
+    }
+
+    jit_native_cache_apply_aux(nds, aux);
+    memcpy(jit_native_cache_blocks, blocks, blocks_size);
+    jit_native_cache_block_count = header.block_count;
+    memcpy(jit_native_cache_dependencies, dependencies, dependencies_size);
+    jit_native_cache_dependency_count = header.dependency_count;
+    for (uint32_t i = 0; i < header.block_count; i++) {
+        const jit_native_cache_block_t *block = &blocks[i];
+        arm_t *cpu = block->cpu ? &nds->arm9 : &nds->arm7;
+        for (uint32_t d = 0; d < block->dependency_count; d++) {
+            const jit_native_cache_dependency_t *dependency =
+                &dependencies[block->dependency_first + d];
+            bus_range_mark_written((unsigned char *)cpu, dependency->address,
+                                   dependency->size);
+        }
+    }
+#if defined(SEEDLESS_JIT_PROFILE)
+    jit_warm_profile_native_blocks_restored = header.block_count;
+#endif
+    memset(nds->arm9.block_lookup, 0, sizeof nds->arm9.block_lookup);
+    memset(nds->arm7.block_lookup, 0, sizeof nds->arm7.block_lookup);
+    memset(jit_block_lookup_secondary, 0, sizeof jit_block_lookup_secondary);
+
+    flush_cache_range(live->code_main_ram, live->region[JIT_REGION_MAIN_RAM].code);
+    flush_cache_range(live->code_main_ram + JIT_CODE_MAIN_RAM_SIZE,
+                      live->region[JIT_REGION_MAIN_RAM].table);
+    flush_cache_range(live->code_other, live->region[JIT_REGION_OTHER].code);
+    flush_cache_range(live->code_other + JIT_CODE_OTHER_SIZE,
+                      live->region[JIT_REGION_OTHER].table);
+    flush_cache_range(live->code_itcm, live->region[JIT_REGION_ITCM].code);
+    flush_cache_range(live->code_itcm + JIT_CODE_ITCM_SIZE,
+                      live->region[JIT_REGION_ITCM].table);
+
+    nds->arm9.jit_block =
+        (uint8_t *)jit_cache_lookup_or_compile(&nds->arm9, nds->arm9.pc) + 8;
+    nds->arm7.jit_block =
+        (uint8_t *)jit_cache_lookup_or_compile(&nds->arm7, nds->arm7.pc) + 8;
+    nds->arm9.jit_swi_entry = (uint8_t *)jit_cache_lookup_or_compile(
+        &nds->arm9, nds->arm9.cp15->exception_vector_base + 8);
+    nds->arm9.jit_irq_entry = (uint8_t *)jit_cache_lookup_or_compile(
+        &nds->arm9, nds->arm9.cp15->exception_vector_base + 0x18);
+    nds->arm7.jit_swi_entry =
+        (uint8_t *)jit_cache_lookup_or_compile(&nds->arm7, 8);
+    nds->arm7.jit_irq_entry =
+        (uint8_t *)jit_cache_lookup_or_compile(&nds->arm7, 0x18);
+    ok = 1;
+    release(payload);
+done:
+    close_file(file);
+    return ok;
+}
+
+static void jit_native_cache_save(nds_t *nds)
+{
+    if (!jit_warm_cache_enabled || !jit_native_cache_path[0] ||
+        !jit_native_cache_complete || jit_native_cache_block_count == 0 ||
+        jit_native_cache_dependency_count == 0 ||
+        nds->bus.slot2_rom || nds->bus.slot2_page_bits || nds->bus.slot2_code_bits)
+        return;
+    /* Invalidation bitmaps are indexed through the live bus mapping. Persist
+     * them only when that mapping still matches the post-reset layout. */
+    if (!jit_native_cache_initial_mapping_signature ||
+        jit_native_mapping_signature(nds) !=
+        jit_native_cache_initial_mapping_signature)
+        return;
+
+    size_t blocks_size = (size_t)jit_native_cache_block_count *
+                         sizeof(jit_native_cache_block_t);
+    size_t dependencies_size = (size_t)jit_native_cache_dependency_count *
+                               sizeof(jit_native_cache_dependency_t);
+    size_t payload_size = sizeof(jit_arena_t) + sizeof(jit_native_cache_aux_t) +
+                          blocks_size + dependencies_size;
+    typedef void *(*fn_malloc)(size_t);
+    typedef void (*fn_free)(void *);
+    fn_malloc allocate = (fn_malloc)sym_libc_malloc;
+    fn_free release = (fn_free)sym_libc_free;
+    uint8_t *payload = (uint8_t *)allocate(payload_size);
+    if (!payload)
+        return;
+
+    jit_arena_t *snapshot = (jit_arena_t *)payload;
+    memcpy(snapshot, &nds->jit_arena, sizeof(*snapshot));
+    uint8_t *base = (uint8_t *)&nds->jit_arena;
+    for (uint32_t i = 0; i < JIT_REGIONS; i++) {
+        if (!jit_native_cache_encode_pointer(base, snapshot->region[i].code,
+                                             &snapshot->region[i].code) ||
+            !jit_native_cache_encode_pointer(base, snapshot->region[i].table,
+                                             &snapshot->region[i].table)) {
+            release(payload);
+            return;
+        }
+    }
+    if (!jit_native_cache_encode_pointer(base, snapshot->record_cursor,
+                                         &snapshot->record_cursor)) {
+        release(payload);
+        return;
+    }
+    memset(snapshot->records, 0, sizeof snapshot->records);
+    memset(snapshot->pending_branch, 0, sizeof snapshot->pending_branch);
+    snapshot->pending_branch_count = 0;
+    snapshot->block_pc_count = 0;
+    memset(snapshot->block_pc, 0, sizeof snapshot->block_pc);
+    for (uint32_t i = 0; i < snapshot->itcm_variant_count; i++) {
+        uint8_t *block = snapshot->itcm_variant[i].block;
+        if (block && !jit_native_cache_encode_pointer(
+                         base, block, &snapshot->itcm_variant[i].block)) {
+            release(payload);
+            return;
+        }
+    }
+
+    jit_native_cache_aux_t *aux =
+        (jit_native_cache_aux_t *)(payload + sizeof(*snapshot));
+    jit_native_cache_capture_aux(nds, aux);
+    memcpy((uint8_t *)aux + sizeof(*aux), jit_native_cache_blocks, blocks_size);
+    memcpy((uint8_t *)aux + sizeof(*aux) + blocks_size,
+           jit_native_cache_dependencies, dependencies_size);
+
+    jit_native_cache_header_t header = {
+        JIT_NATIVE_CACHE_MAGIC, JIT_NATIVE_CACHE_VERSION,
+        SEEDLESS_JIT_NATIVE_CACHE_ABI,
+        jit_warm_cache_game_code, jit_warm_cache_rom_size,
+        jit_warm_cache_header_crc, jit_native_cache_block_count,
+        jit_native_cache_dependency_count,
+        sizeof(jit_arena_t), sizeof(jit_native_cache_aux_t),
+        jit_native_cache_crc(payload, payload_size),
+        jit_native_cache_initial_mapping_signature
+    };
+    void *file = nds_platform_default()->files.open(
+        nds_platform_default()->user, jit_native_cache_path, "wb");
+    if (file) {
+        size_t (*write_file)(const void *, size_t, size_t, void *) =
+            (size_t (*)(const void *, size_t, size_t, void *))sym_libc_fwrite;
+        int (*close_file)(void *) = (int (*)(void *))sym_libc_fclose;
+        if (write_file(&header, sizeof header, 1, file) == 1)
+            (void)write_file(payload, 1, payload_size, file);
+        close_file(file);
+    }
+    release(payload);
 }
 
 void jit_warm_cache_begin(unsigned char *machine)
@@ -125,7 +911,13 @@ void jit_warm_cache_begin(unsigned char *machine)
         jit_warm_cache_path[0] = 0;
         return;
     }
+    path_length = snprintf(jit_native_cache_path, sizeof jit_native_cache_path,
+                           "%s.native", jit_warm_cache_path);
+    if (path_length < 0 || (size_t)path_length >= sizeof jit_native_cache_path) {
+        jit_native_cache_path[0] = 0;
+    }
     jit_warm_cache_enabled = 1;
+    jit_native_cache_complete = jit_native_cache_path[0] != 0;
 
     read_file = (size_t (*)(void *, size_t, size_t, void *))sym_libc_fread;
     close_file = (int (*)(void *))sym_libc_fclose;
@@ -205,6 +997,16 @@ void jit_warm_cache_preload(unsigned char *machine, int allow)
     if (allow == 0 || nds->runtime.jit_enabled == 0)
         return;
 
+    if (allow == 1)
+        jit_native_cache_initial_mapping_signature =
+            jit_native_mapping_signature(nds);
+
+    /* Restore only on a regular ROM boot. Savestate restoration has different
+     * RAM and mapping contents; it keeps the existing signature-checked,
+     * on-demand warm-precompile path below. */
+    if (allow == 1 && jit_native_cache_try_restore(nds))
+        return;
+
 #if defined(SEEDLESS_JIT_PROFILE)
     jit_warm_profile_loaded = jit_warm_cache_preload_count;
     jit_warm_profile_preloading = 1;
@@ -250,7 +1052,8 @@ void jit_warm_cache_preload(unsigned char *machine, int allow)
 
 void jit_warm_cache_profile_read(uint64_t *loaded, uint64_t *signature_skips,
                                  uint64_t *already_compiled, uint64_t *candidates,
-                                 uint64_t *compiled_blocks)
+                                 uint64_t *compiled_blocks,
+                                 uint64_t *native_blocks_restored)
 {
 #if defined(SEEDLESS_JIT_PROFILE)
     if (loaded) *loaded = jit_warm_profile_loaded;
@@ -258,12 +1061,15 @@ void jit_warm_cache_profile_read(uint64_t *loaded, uint64_t *signature_skips,
     if (already_compiled) *already_compiled = jit_warm_profile_already_compiled;
     if (candidates) *candidates = jit_warm_profile_candidates;
     if (compiled_blocks) *compiled_blocks = jit_warm_profile_compiled_blocks;
+    if (native_blocks_restored)
+        *native_blocks_restored = jit_warm_profile_native_blocks_restored;
 #else
     if (loaded) *loaded = 0;
     if (signature_skips) *signature_skips = 0;
     if (already_compiled) *already_compiled = 0;
     if (candidates) *candidates = 0;
     if (compiled_blocks) *compiled_blocks = 0;
+    if (native_blocks_restored) *native_blocks_restored = 0;
 #endif
 }
 
@@ -370,6 +1176,7 @@ void jit_warm_cache_save(void)
         (void)write_file(jit_warm_cache_entries, sizeof(jit_warm_cache_entry_t),
                          jit_warm_cache_count, file);
     close_file(file);
+    jit_native_cache_save(&nds_machine);
 }
 
 void jit_block_lookup_invalidate(void *ctx, uint32_t dir)
