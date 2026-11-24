@@ -20,22 +20,15 @@
 #include <sys/mman.h>
 #endif
 
-/* The primary way lives in arm_t for a single-load hot path. Keep the second
- * way outside arm_t because generated code and save-state layouts depend on
+/* The primary way lives in arm_t for a single-load hot path. Keep both victim
+ * ways outside arm_t because generated code and save-state layouts depend on
  * the structure offsets. One row per emulated CPU. */
 /* Generated dispatch code names this array only through inline assembly, so
  * LTO cannot see the reference; keep the definition even when it looks unused. */
-uint64_t jit_block_lookup_secondary[2][ARM_BLOCK_LOOKUP]
+uint64_t jit_block_lookup_secondary[2][ARM_BLOCK_LOOKUP][2]
     __attribute__((visibility("hidden"), aligned(64), used));
 
 static void *jit_block_lookup_cached(void *ctx, uint32_t pc);
-
-/* Fold page and instruction-mode bits into the compact dispatcher cache index.
- * The guest PC tag is still stored and compared in full by the fast path. */
-static inline uint32_t jit_dispatch_cache_index(uint32_t pc)
-{
-    return (pc ^ (pc >> 10) ^ (pc >> 20)) & (ARM_BLOCK_LOOKUP - 1u);
-}
 static void flush_cache_range(const uint8_t *first, const uint8_t *last);
 static uint64_t jit_native_mapping_signature(const nds_t *nds);
 static uint64_t jit_native_hash_u64(uint64_t hash, uint64_t value);
@@ -1455,9 +1448,10 @@ void jit_warm_cache_save(void)
 void jit_block_lookup_invalidate(void *ctx, uint32_t dir)
 {
     arm_t *cpu = CPU(ctx);
-    uint32_t slot = jit_dispatch_cache_index(dir);
+    uint32_t slot = (dir >> 2) & (ARM_BLOCK_LOOKUP - 1u);
     cpu->block_lookup[slot] = 0;
-    jit_block_lookup_secondary[cpu->is_arm9 != 0][slot] = 0;
+    jit_block_lookup_secondary[cpu->is_arm9 != 0][slot][0] = 0;
+    jit_block_lookup_secondary[cpu->is_arm9 != 0][slot][1] = 0;
 }
 
 
@@ -2353,7 +2347,9 @@ void jit_dispatch_profile_read(uint64_t *primary_misses, uint64_t *secondary_hit
                         + __atomic_load_n(&jit_dispatch_profile_counters[1][0], __ATOMIC_RELAXED);
     if (secondary_hits)
         *secondary_hits = __atomic_load_n(&jit_dispatch_profile_counters[0][1], __ATOMIC_RELAXED)
-                        + __atomic_load_n(&jit_dispatch_profile_counters[1][1], __ATOMIC_RELAXED);
+                        + __atomic_load_n(&jit_dispatch_profile_counters[1][1], __ATOMIC_RELAXED)
+                        + __atomic_load_n(&jit_dispatch_profile_counters[0][2], __ATOMIC_RELAXED)
+                        + __atomic_load_n(&jit_dispatch_profile_counters[1][2], __ATOMIC_RELAXED);
 }
 #endif
 
@@ -2430,7 +2426,7 @@ void *jit_cache_lookup_or_compile(void *ctx, uint32_t dir)
     uint8_t *c = (uint8_t *)ctx;
     jit_arena_t *ar = CPU(c)->jit_arena;
     uint8_t *b = (uint8_t *)ar;
-    uint32_t i13 = jit_dispatch_cache_index(dir);
+    uint32_t i13 = (dir >> 2) & 0x3ff;
     uint32_t i21 = (dir >> 2) & 0x1fff;
     uint32_t i20 = (dir >> 1) & 0x3fff;
     uint32_t pair = dir & 1;
@@ -2439,8 +2435,13 @@ void *jit_cache_lookup_or_compile(void *ctx, uint32_t dir)
 
 #define LOOKUP_RETURN(p, o) do {                                    \
         uint64_t old_target_ = CPU(c)->block_lookup[i13];            \
-        if ((uint32_t)old_target_ != dir)                            \
-            jit_block_lookup_secondary[CPU(c)->is_arm9 != 0][i13] = old_target_; \
+        uint64_t *victims_ =                                         \
+            jit_block_lookup_secondary[CPU(c)->is_arm9 != 0][i13];   \
+        if (old_target_ && (uint32_t)old_target_ != dir &&           \
+            victims_[0] != old_target_) {                            \
+            victims_[1] = victims_[0];                               \
+            victims_[0] = old_target_;                               \
+        }                                                            \
         CPU(c)->block_lookup[i13] = ((uint64_t)(o) << 32) | dir; \
         return (void *)(p);                               \
     } while (0)

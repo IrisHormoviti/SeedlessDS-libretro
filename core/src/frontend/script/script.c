@@ -908,7 +908,7 @@ _Static_assert(offsetof(arm_t, block_lookup) == 0x80, "JIT target cache offset")
 _Static_assert(sizeof(((arm_t *)0)->block_lookup) == 0x2000, "JIT cache row size");
 _Static_assert(offsetof(arm_t, is_arm9) == 0x210c, "JIT CPU selector offset");
 _Static_assert(offsetof(arm_t, pc) == 0x23bc, "JIT saved PC offset");
-extern uint64_t jit_block_lookup_secondary[2][ARM_BLOCK_LOOKUP]
+extern uint64_t jit_block_lookup_secondary[2][ARM_BLOCK_LOOKUP][2]
     __attribute__((visibility("hidden")));
 #if defined(SEEDLESS_JIT_PROFILE)
 extern uint64_t jit_dispatch_profile_counters[2][8]
@@ -948,11 +948,7 @@ __asm__(
 "    br x1                                     \n"
 "jit_dispatch_block_cache:\n"
 /* Keep the slot in w4 while x1 holds the primary entry address. */
-/* Match jit_dispatch_cache_index(): fold mode, page, and region bits while
- * preserving the fixed 1024-slot arm_t table and full-PC tag check. */
-"    eor w4, w0, w0, lsr #10                   \n"
-"    eor w4, w4, w0, lsr #20                   \n"
-"    and w4, w4, #0x3ff                        \n"
+"    ubfx w4, w0, #2, #10                      \n"
 "    add x1, x28, w4, uxtw #3                  \n"
 "    ldr x2, [x1, #0x80]                       \n"
 "    sub w3, w2, w0                            \n"
@@ -962,11 +958,22 @@ JIT_PROFILE_DISPATCH_COUNT("0")
 "    add x3, x3, :lo12:jit_block_lookup_secondary\n"
 "    ldr w5, [x28, #0x210c]                    \n"
 "    cbz w5, 1f                                \n"
-"    add x3, x3, #2, lsl #12                  \n"
-"1:  add x3, x3, w4, uxtw #3                  \n"
+"    add x3, x3, #4, lsl #12                  \n"
+"1:  add x3, x3, w4, uxtw #4                  \n"
 "    ldr x4, [x3]                              \n"
 "    sub w5, w4, w0                            \n"
-"    cbnz w5, L_jit_dispatch_lookup_or_compile_1\n"
+"    cbz w5, 3f                                \n"
+"    ldr x5, [x3, #8]                          \n"
+"    sub w7, w5, w0                            \n"
+"    cbnz w7, L_jit_dispatch_lookup_or_compile_1\n"
+/* Promote way 1; retain both the old primary and way 0 in the victim set. */
+"    str x4, [x3, #8]                          \n"
+"    str x2, [x3]                              \n"
+"    str x5, [x1, #0x80]                       \n"
+"    mov x2, x5                                \n"
+JIT_PROFILE_DISPATCH_COUNT("16")
+"    b 2f                                      \n"
+"3:                                            \n"
 JIT_PROFILE_DISPATCH_COUNT("8")
 "    str x2, [x3]                              \n"
 "    str x4, [x1, #0x80]                       \n"
