@@ -78,6 +78,7 @@ uint32_t nds_frame_word(nds_t *nds);
 uint32_t nds_perf_word(nds_t *nds);
 void nds_screen_buffers(nds_t *nds, const void **top, const void **bottom);
 int nds_screens_rgba(nds_t *nds, void *top, void *bottom);
+int nds_screens_rgba_scale(nds_t *nds, void *top, void *bottom, unsigned scale);
 int nds_screenshot(nds_t *nds, void *rgba, size_t size);
 void nds_clear_screens(nds_t *nds, uint32_t texture_top, uint32_t texture_bottom);
 void nds_signal_screen(nds_t *nds);
