@@ -187,12 +187,30 @@ if(NOT APPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/link.T")
         -Wl,-Bsymbolic)
 endif()
 
-# Tune host C/C++ without raising the baseline AArch64 instruction set.
-set(SEEDLESS_ARM_TUNE "" CACHE STRING "Optional AArch64 CPU tune (for example cortex-a55)")
+# Tune AArch64 builds for the RG DS Plus's Cortex-A55 by default without
+# raising the baseline instruction set. The cache option remains overridable.
+set(SEEDLESS_ARM_TUNE_DEFAULT "")
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$" OR
+   CMAKE_C_COMPILER_TARGET MATCHES "aarch64")
+    set(SEEDLESS_ARM_TUNE_DEFAULT "cortex-a55")
+endif()
+set(SEEDLESS_ARM_TUNE "${SEEDLESS_ARM_TUNE_DEFAULT}" CACHE STRING
+    "AArch64 CPU tuning target (defaults to cortex-a55 on AArch64)")
 if(SEEDLESS_ARM_TUNE)
     include(CheckCCompilerFlag)
-    check_c_compiler_flag("-mtune=${SEEDLESS_ARM_TUNE}" "SEEDLESS_TUNE_${SEEDLESS_ARM_TUNE}")
-    if(NOT SEEDLESS_TUNE_${SEEDLESS_ARM_TUNE})
+    string(MAKE_C_IDENTIFIER "${SEEDLESS_ARM_TUNE}" SEEDLESS_TUNE_ID)
+    set(SEEDLESS_TUNE_CHECK_VAR "SEEDLESS_TUNE_${SEEDLESS_TUNE_ID}")
+    check_c_compiler_flag("-mtune=${SEEDLESS_ARM_TUNE}" "${SEEDLESS_TUNE_CHECK_VAR}")
+    # Zig's AArch64 CPU names use underscores; GCC/Clang use hyphens.
+    if(NOT ${SEEDLESS_TUNE_CHECK_VAR} AND SEEDLESS_ARM_TUNE STREQUAL "cortex-a55")
+        check_c_compiler_flag("-mtune=cortex_a55" SEEDLESS_TUNE_cortex_a55_UNDERSCORE)
+        if(SEEDLESS_TUNE_cortex_a55_UNDERSCORE)
+            set(SEEDLESS_ARM_TUNE "cortex_a55" CACHE STRING
+                "AArch64 CPU tuning target (defaults to cortex-a55 on AArch64)" FORCE)
+            set(SEEDLESS_TUNE_CHECK_VAR SEEDLESS_TUNE_cortex_a55_UNDERSCORE)
+        endif()
+    endif()
+    if(NOT ${SEEDLESS_TUNE_CHECK_VAR})
         message(FATAL_ERROR "Unsupported ARM tuning: ${SEEDLESS_ARM_TUNE}")
     endif()
     foreach(target IN ITEMS recon_fn seedlessds_libretro)

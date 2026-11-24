@@ -53,8 +53,10 @@ An x86_64 build is possible with `SEEDLESS_ALLOW_NON_AARCH64` (JIT stubs), but i
 
 ### RG DS / RG DS Plus performance
 
-For AArch64 Linux, configure a Release build with `-DSEEDLESS_ARM_TUNE=cortex-a55`
-and `-DSEEDLESS_ENABLE_IPO=ON` to test CPU tuning and link-time optimization.
+New AArch64 builds default to Cortex-A55 tuning without raising the required
+instruction set; pass `-DSEEDLESS_ARM_TUNE=` to disable it. For AArch64 Linux,
+configure a Release build with `-DSEEDLESS_ENABLE_IPO=ON` to test link-time
+optimization.
 Zig uses `cortex_a55` for the tuning value. Build a second copy with the same
 toolchain and tuning and `-DSEEDLESS_ENABLE_IPO=OFF` to isolate the effect of LTO.
 The cross-toolchain needs an LTO-capable linker and archive tools, such as
