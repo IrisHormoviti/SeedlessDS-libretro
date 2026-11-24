@@ -906,6 +906,7 @@ _Static_assert(offsetof(nds_t, arm9) == JIT_DISPATCH_ARM9_OFFSET, "arm9 offset")
 _Static_assert(offsetof(nds_t, arm7) == JIT_DISPATCH_ARM7_OFFSET, "arm7 offset");
 _Static_assert(offsetof(arm_t, block_lookup) == 0x80, "JIT target cache offset");
 _Static_assert(offsetof(arm_t, is_arm9) == 0x210c, "JIT CPU selector offset");
+_Static_assert(offsetof(arm_t, pc) == 0x23bc, "JIT saved PC offset");
 extern uint64_t jit_block_lookup_secondary[2][ARM_BLOCK_LOOKUP]
     __attribute__((visibility("hidden")));
 #if defined(SEEDLESS_JIT_PROFILE)
@@ -1057,6 +1058,15 @@ JIT_PROFILE_DISPATCH_COUNT("8")
 "    movk w2, #(" JIT_DISPATCH_STR(JIT_DISPATCH_ARM9_OFFSET) " >> 16), lsl #16\n"
 "    add x20, x19, w1, uxtw                    \n"
 "    add x28, x19, w2, uxtw                    \n"
+/* BananaDS patch 0120: prefetch each CPU's next lookup slot while the scheduler works. */
+"    ldr w0, [x20, #0x23bc]                    \n"
+"    ubfx w1, w0, #2, #10                      \n"
+"    add x1, x20, w1, uxtw #3                  \n"
+"    prfm pldl1keep, [x1, #0x80]               \n"
+"    ldr w0, [x28, #0x23bc]                    \n"
+"    ubfx w1, w0, #2, #10                      \n"
+"    add x1, x28, w1, uxtw #3                  \n"
+"    prfm pldl1keep, [x1, #0x80]               \n"
 "    ldr w0, [x28, #8456]                      \n"
 "    ldr w2, [x28, #9152]                      \n"
 "    cbz w0, L_jit_scheduler_return_dispatch_4                           \n"
