@@ -41,6 +41,8 @@ nds_t *nds_create(const nds_platform_t *platform, uint32_t api_level,
 void nds_destroy(nds_t *nds)
 {
     (void)nds;
+    jit_warm_cache_save();
+    jit_warm_cache_clear();
     nds_subsystem_shutdown_release_objects();
 }
 

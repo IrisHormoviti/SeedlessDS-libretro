@@ -81,6 +81,20 @@ void *jit_cache_lookup_or_compile(void *ctx, uint32_t dir)
     return NULL;
 }
 
+void jit_warm_cache_clear(void) {}
+void jit_warm_cache_begin(unsigned char *machine) { (void)machine; }
+void jit_warm_cache_preload(unsigned char *machine, int allow)
+{
+    (void)machine;
+    (void)allow;
+}
+void jit_warm_cache_record(void *ctx, uint32_t pc)
+{
+    (void)ctx;
+    (void)pc;
+}
+void jit_warm_cache_save(void) {}
+
 void jit_profile_reset(void) {}
 
 void jit_profile_read(uint64_t *blocks, uint64_t *analysis_us)

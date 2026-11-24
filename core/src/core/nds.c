@@ -8,6 +8,7 @@
 #include "rtc.h"
 #include "core/nds_state.h"
 #include "core/nds_start.h"
+#include "frontend/frontend.h"
 #include "frontend/script/script_state.h"
 
 void audio_out_unmute_and_resume(spu_t *spu);
@@ -24,6 +25,7 @@ static int (*core_mprotect)(void *, size_t, int);
 static int (*core_setjmp)(void *);
 
 int nds_start_game(nds_start_params_t *params) {
+    jit_warm_cache_clear();
     if (!core_mprotect) {
         core_mprotect = (int (*)(void *, size_t, int))sym_libc_mprotect;
         core_setjmp   = (int (*)(void *))sym_libc__setjmp;
@@ -63,6 +65,7 @@ int nds_start_game(nds_start_params_t *params) {
     if (cart_open_rom(
             &nds_machine.cart, (char *)params->rom_path) != 0)
         return -1;
+    jit_warm_cache_begin(G);
 
     const unsigned char *src = params->config;
     nds_config_t *dst = &((nds_t *)G)->config;
@@ -80,6 +83,8 @@ int nds_start_game(nds_start_params_t *params) {
     core_setjmp(((nds_t *)G)->fatal_jump);
 
     if (ctl->restart_pending == 1) { ctl->restart_pending = 0; return 0; }
+
+    jit_warm_cache_preload(G, FRONTEND->state_load_request == 0);
 
     if (params->benchmark_frames != 0) ctl->restart_pending = 1;
     if (((nds_t *)G)->runtime.jit_enabled != 0)

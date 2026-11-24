@@ -7,14 +7,178 @@
 #define PT(p) (&CPU(p)->pagetable)
 #include <string.h>
 #include <stddef.h>
+#include <stdio.h>
 #include "core_internals.h"
 #include "mem_access.h"
+#include "seedlessds/platform.h"
 
 /* The primary way lives in arm_t for a single-load hot path. Keep the second
  * way outside arm_t because generated code and save-state layouts depend on
  * the structure offsets. One row per emulated CPU. */
 uint64_t jit_block_lookup_secondary[2][ARM_BLOCK_LOOKUP]
     __attribute__((visibility("hidden"), aligned(64)));
+
+#define JIT_WARM_CACHE_MAGIC 0x574a5344u
+#define JIT_WARM_CACHE_VERSION 1u
+#define JIT_WARM_CACHE_MAX_ENTRIES 256u
+#define JIT_WARM_CACHE_PREWARM_ENTRIES 64u
+
+typedef struct jit_warm_cache_entry {
+    uint32_t pc;
+    uint32_t cpu;
+} jit_warm_cache_entry_t;
+
+typedef struct jit_warm_cache_header {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t game_code;
+    uint32_t rom_size;
+    uint32_t header_crc;
+    uint32_t count;
+    uint32_t entries_crc;
+} jit_warm_cache_header_t;
+
+static jit_warm_cache_entry_t jit_warm_cache_entries[JIT_WARM_CACHE_MAX_ENTRIES];
+static uint32_t jit_warm_cache_count;
+static uint32_t jit_warm_cache_loaded_count;
+static uint32_t jit_warm_cache_game_code;
+static uint32_t jit_warm_cache_rom_size;
+static uint32_t jit_warm_cache_header_crc;
+static uint8_t jit_warm_cache_enabled;
+static char jit_warm_cache_path[0x410];
+
+void jit_warm_cache_clear(void)
+{
+    jit_warm_cache_enabled = 0;
+    jit_warm_cache_count = 0;
+    jit_warm_cache_loaded_count = 0;
+    jit_warm_cache_path[0] = 0;
+}
+
+static uint32_t jit_warm_cache_entries_crc(const jit_warm_cache_entry_t *entries,
+                                           uint32_t count)
+{
+    uint32_t crc = 2166136261u;
+    const uint8_t *bytes = (const uint8_t *)entries;
+    for (uint32_t i = 0; i < count * (uint32_t)sizeof(*entries); i++)
+        crc = (crc ^ bytes[i]) * 16777619u;
+    return crc;
+}
+
+void jit_warm_cache_begin(unsigned char *machine)
+{
+    arm_t *cpu = CPU(machine);
+    nds_t *nds = cpu->machine;
+    rom_image_t *rom = nds->cart.rom;
+    jit_warm_cache_header_t header;
+    size_t (*read_file)(void *, size_t, size_t, void *);
+    int (*close_file)(void *);
+
+    jit_warm_cache_clear();
+    if (!rom || !rom->data || rom->size < CART_HEADER_SIZE)
+        return;
+
+    jit_warm_cache_game_code = nds->cart.game_code;
+    jit_warm_cache_rom_size = rom->size;
+    jit_warm_cache_header_crc = util_crc32_buffer_padded(rom->data, CART_HEADER_SIZE);
+    int path_length = snprintf(jit_warm_cache_path, sizeof jit_warm_cache_path,
+                               "%s/jit_warm_%08x_%08x_%08x.bin", nds->cache_dir,
+                               jit_warm_cache_game_code, jit_warm_cache_rom_size,
+                               jit_warm_cache_header_crc);
+    if (path_length < 0 || (size_t)path_length >= sizeof jit_warm_cache_path) {
+        jit_warm_cache_path[0] = 0;
+        return;
+    }
+    jit_warm_cache_enabled = 1;
+
+    read_file = (size_t (*)(void *, size_t, size_t, void *))sym_libc_fread;
+    close_file = (int (*)(void *))sym_libc_fclose;
+    void *file = nds_platform_default()->files.open(
+        nds_platform_default()->user, jit_warm_cache_path, "rb");
+    if (!file)
+        return;
+
+    if (read_file(&header, sizeof header, 1, file) == 1 &&
+        header.magic == JIT_WARM_CACHE_MAGIC &&
+        header.version == JIT_WARM_CACHE_VERSION &&
+        header.game_code == jit_warm_cache_game_code &&
+        header.rom_size == jit_warm_cache_rom_size &&
+        header.header_crc == jit_warm_cache_header_crc &&
+        header.count <= JIT_WARM_CACHE_MAX_ENTRIES &&
+        read_file(jit_warm_cache_entries, sizeof(jit_warm_cache_entry_t),
+                  header.count, file) == header.count &&
+        jit_warm_cache_entries_crc(jit_warm_cache_entries, header.count) ==
+            header.entries_crc) {
+        uint32_t valid_count = 0;
+        for (uint32_t i = 0; i < header.count; i++) {
+            jit_warm_cache_entry_t entry = jit_warm_cache_entries[i];
+            if (entry.cpu > 1)
+                continue;
+            jit_warm_cache_entries[valid_count++] = entry;
+        }
+        jit_warm_cache_count = valid_count;
+        jit_warm_cache_loaded_count = valid_count;
+    }
+    close_file(file);
+}
+
+void jit_warm_cache_preload(unsigned char *machine, int allow)
+{
+    if (!jit_warm_cache_enabled || !allow ||
+        ((nds_t *)machine)->runtime.jit_enabled == 0)
+        return;
+
+    uint32_t count = jit_warm_cache_loaded_count;
+    if (count > JIT_WARM_CACHE_PREWARM_ENTRIES)
+        count = JIT_WARM_CACHE_PREWARM_ENTRIES;
+    for (uint32_t i = 0; i < count; i++) {
+        jit_warm_cache_entry_t *entry = &jit_warm_cache_entries[i];
+        arm_t *cpu = entry->cpu ? &((nds_t *)machine)->arm9 :
+                                  &((nds_t *)machine)->arm7;
+        (void)jit_cache_lookup_or_compile(cpu, entry->pc);
+    }
+}
+
+void jit_warm_cache_record(void *ctx, uint32_t pc)
+{
+    if (!jit_warm_cache_enabled ||
+        jit_warm_cache_count >= JIT_WARM_CACHE_MAX_ENTRIES)
+        return;
+
+    uint32_t cpu = CPU(ctx)->is_arm9 != 0;
+    for (uint32_t i = 0; i < jit_warm_cache_count; i++)
+        if (jit_warm_cache_entries[i].pc == pc &&
+            jit_warm_cache_entries[i].cpu == cpu)
+            return;
+    jit_warm_cache_entries[jit_warm_cache_count++] =
+        (jit_warm_cache_entry_t){ pc, cpu };
+}
+
+void jit_warm_cache_save(void)
+{
+    if (!jit_warm_cache_enabled || !jit_warm_cache_path[0])
+        return;
+
+    size_t (*write_file)(const void *, size_t, size_t, void *);
+    int (*close_file)(void *);
+    write_file = (size_t (*)(const void *, size_t, size_t, void *))sym_libc_fwrite;
+    close_file = (int (*)(void *))sym_libc_fclose;
+    void *file = nds_platform_default()->files.open(
+        nds_platform_default()->user, jit_warm_cache_path, "wb");
+    if (!file)
+        return;
+
+    jit_warm_cache_header_t header = {
+        JIT_WARM_CACHE_MAGIC, JIT_WARM_CACHE_VERSION,
+        jit_warm_cache_game_code, jit_warm_cache_rom_size,
+        jit_warm_cache_header_crc, jit_warm_cache_count,
+        jit_warm_cache_entries_crc(jit_warm_cache_entries, jit_warm_cache_count)
+    };
+    if (write_file(&header, sizeof header, 1, file) == 1)
+        (void)write_file(jit_warm_cache_entries, sizeof(jit_warm_cache_entry_t),
+                         jit_warm_cache_count, file);
+    close_file(file);
+}
 
 void jit_block_lookup_invalidate(void *ctx, uint32_t dir)
 {
@@ -1027,6 +1191,7 @@ void *jit_cache_lookup_or_compile(void *ctx, uint32_t dir)
     uint32_t noff = (uint32_t)(updated - b);
 
     if (updated) {
+        jit_warm_cache_record(ctx, dir);
         if (ent) {
             if (ent->offset == 0) {
                 ent->pc = dir; ent->offset = noff;
