@@ -330,16 +330,12 @@ void *nds_main_ram(nds_t *nds)
 void *nds_save_ram(nds_t *nds)
 {
     if (nds == NULL)
-        nds = FRONTEND->machine;
-    if (nds == NULL)
         return NULL;
     return nds->cart.backup.data;
 }
 
 size_t nds_save_ram_size(nds_t *nds)
 {
-    if (nds == NULL)
-        nds = FRONTEND->machine;
     if (nds == NULL || nds->cart.backup.data == NULL)
         return 0;
     return (size_t)nds->cart.backup.mask + 1u;

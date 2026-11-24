@@ -123,7 +123,10 @@ static bool benchmark(const struct retro_game_info *game, uint64_t warmup, uint6
 #if defined(SEEDLESS_JIT_PROFILE)
     jit_profile_reset();
 #endif
-    if (!retro_load_game(game) || !wait_until_paused(1, &status)) return false;
+    if (!retro_load_game(game)) return false;
+    retro_run();
+    if (!wait_until_paused(1, &status)) return false;
+    received_video = false;
     retro_run();
     if (!received_video) {
         fprintf(stderr, "Core did not deliver video at the first scheduler frame\n");
@@ -295,7 +298,10 @@ int main(int argc, char **argv)
 
     struct retro_game_info game = { .path = rom_path };
     uint64_t first = strtoull(argv[5], NULL, 10);
-    bool ok = nds_control_run_to(first) && retro_load_game(&game) && capture_at(fd, first);
+    bool ok = nds_control_run_to(first) && retro_load_game(&game);
+    if (ok)
+        retro_run();
+    ok = ok && capture_at(fd, first);
     for (int i = 6; ok && i < argc; i++) {
         char *end;
         uint64_t frame = strtoull(argv[i], &end, 10);

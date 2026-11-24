@@ -2,6 +2,7 @@
 #include <stddef.h>
 #include <setjmp.h>
 #include "hires_runtime.h"
+#include "seedlessds/nds.h"
 #include "blob_symbols.h"
 #include "cpu/jit-arm64/jit_hooks.h"
 #include "core/data_paths.h"
@@ -10,6 +11,9 @@
 #include "core/nds_start.h"
 #include "frontend/frontend.h"
 #include "frontend/script/script_state.h"
+
+extern void seedless_libretro_publish_save_ram(void *data, size_t size);
+extern void seedless_libretro_wait_for_frontend(void);
 
 void audio_out_unmute_and_resume(spu_t *spu);
 void *nds_clear_state_blocks(unsigned char *obj);
@@ -85,6 +89,13 @@ int nds_start_game(nds_start_params_t *params) {
     if (ctl->restart_pending == 1) { ctl->restart_pending = 0; return 0; }
 
     jit_warm_cache_preload(G, FRONTEND->state_load_request == 0);
+
+    /* Reset and preload are complete. Publish the initialized backup buffer
+     * (or the ready/no-save result) before returning control to the frontend. */
+    seedless_libretro_publish_save_ram(
+        nds_save_ram((nds_t *)G), nds_save_ram_size((nds_t *)G));
+    /* Let the frontend import its save RAM before the scheduler can mutate it. */
+    seedless_libretro_wait_for_frontend();
 
     if (params->benchmark_frames != 0) ctl->restart_pending = 1;
     if (((nds_t *)G)->runtime.jit_enabled != 0)
@@ -500,9 +511,13 @@ int nds_close_files(cart_t *cart) {
     }
 
     if (cart->backup_data != 0) {
+        cart->backup.data = 0;
+        cart->backup.mask = 0;
         core_free(cart->backup_data);
         cart->backup_data = 0;
     }
+    cart->backup.data = 0;
+    cart->backup.mask = 0;
 
     spi_memory_close_file(&cart->backup);
 

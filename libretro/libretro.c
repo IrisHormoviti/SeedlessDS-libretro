@@ -42,6 +42,13 @@ static retro_input_state_t input_state_cb;
 
 static nds_t *g_nds;
 static pthread_t g_emu_thread;
+static pthread_mutex_t g_save_ram_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t g_save_ram_cond = PTHREAD_COND_INITIALIZER;
+static void *g_save_ram_data;
+static size_t g_save_ram_size;
+static int g_save_ram_ready;
+static int g_frontend_started;
+static int g_load_finished;
 /* Shared with emu thread — must be volatile or the wait loop is optimized
  * into an infinite sched_yield (black screen, menu unresponsive). */
 static volatile int g_emu_running;
@@ -60,6 +67,46 @@ static int g_stylus_touching;
  * shows the stylus, so drawing it there only obscures the game. */
 static int g_cursor_from_stick;
 extern void jit_native_cache_set_root(const char *path);
+
+/* Called by the core after cart backup mounting has fully initialized RAM. */
+void seedless_libretro_publish_save_ram(void *data, size_t size)
+{
+    pthread_mutex_lock(&g_save_ram_mutex);
+    g_save_ram_data = data;
+    g_save_ram_size = data ? size : 0;
+    g_save_ram_ready = 1;
+    pthread_cond_broadcast(&g_save_ram_cond);
+    pthread_mutex_unlock(&g_save_ram_mutex);
+}
+
+/* Keep emulation paused until the frontend has had its post-load SRAM import
+ * opportunity. The first retro_run call happens after that import. */
+void seedless_libretro_wait_for_frontend(void)
+{
+    pthread_mutex_lock(&g_save_ram_mutex);
+    while (!g_frontend_started && !g_load_finished)
+        pthread_cond_wait(&g_save_ram_cond, &g_save_ram_mutex);
+    pthread_mutex_unlock(&g_save_ram_mutex);
+}
+
+static int wait_for_save_ram_ready(void)
+{
+    int ready;
+    pthread_mutex_lock(&g_save_ram_mutex);
+    while (!g_save_ram_ready && !g_load_finished)
+        pthread_cond_wait(&g_save_ram_cond, &g_save_ram_mutex);
+    ready = g_save_ram_ready && !g_load_finished;
+    pthread_mutex_unlock(&g_save_ram_mutex);
+    return ready;
+}
+
+static void wake_save_ram_waiters(void)
+{
+    pthread_mutex_lock(&g_save_ram_mutex);
+    g_frontend_started = 1;
+    pthread_cond_broadcast(&g_save_ram_cond);
+    pthread_mutex_unlock(&g_save_ram_mutex);
+}
 #define STYLUS_DEADZONE 0x1800
 #define STYLUS_SPEED_PX 4.5f
 
@@ -344,6 +391,7 @@ static void set_seedless_root(void)
 static void *emu_thread_main(void *arg)
 {
     nds_rom_open_t open;
+    int loaded;
     (void)arg;
 
     memset(&open, 0, sizeof open);
@@ -352,14 +400,21 @@ static void *emu_thread_main(void *arg)
     open.config_bits = g_config_bits;
 
     g_emu_started = 1;
-    if (!nds_load_rom(g_nds, &open)) {
+    loaded = nds_load_rom(g_nds, &open);
+    if (!loaded) {
         if (log_cb)
             log_cb(RETRO_LOG_ERROR, CORE_NAME ": nds_load_rom failed\n");
-        g_emu_running = 0;
-        return NULL;
     }
     /* nds_load_rom normally blocks in the scheduler until quit. */
     g_emu_running = 0;
+    pthread_mutex_lock(&g_save_ram_mutex);
+    g_save_ram_data = NULL;
+    g_save_ram_size = 0;
+    g_save_ram_ready = 0;
+    g_load_finished = 1;
+    pthread_cond_broadcast(&g_save_ram_cond);
+    pthread_mutex_unlock(&g_save_ram_mutex);
+    wake_save_ram_waiters();
     return NULL;
 }
 
@@ -725,6 +780,11 @@ void retro_run(void)
     nds_input_t input;
     int ms;
 
+    pthread_mutex_lock(&g_save_ram_mutex);
+    g_frontend_started = 1;
+    pthread_cond_broadcast(&g_save_ram_cond);
+    pthread_mutex_unlock(&g_save_ram_mutex);
+
     if (!g_nds || !g_emu_running)
         return;
 
@@ -850,6 +910,9 @@ bool retro_unserialize(const void *data, size_t size)
     }
     fclose(f);
     nds_state_load(g_nds, 0);
+    /* The core is still behind the pre-run save import gate; an explicit
+     * state restore is itself evidence that the frontend finished SRAM import. */
+    wake_save_ram_waiters();
     /* The emulation thread applies the request. Do not tell the frontend the
      * load is done until it has, so the window can stay hidden (and the
      * resume card on screen) while the state is decompressed and the machine
@@ -1025,6 +1088,13 @@ bool retro_load_game(const struct retro_game_info *info)
 #endif
     g_emu_running = 1;
     g_emu_started = 0;
+    pthread_mutex_lock(&g_save_ram_mutex);
+    g_save_ram_data = NULL;
+    g_save_ram_size = 0;
+    g_save_ram_ready = 0;
+    g_frontend_started = 0;
+    g_load_finished = 0;
+    pthread_mutex_unlock(&g_save_ram_mutex);
     if (pthread_create(&g_emu_thread, NULL, emu_thread_main, NULL) != 0) {
 #ifdef SEEDLESS_GLES_COMPUTE
         compute_stop();
@@ -1044,12 +1114,13 @@ bool retro_load_game(const struct retro_game_info *info)
         log_cb(RETRO_LOG_INFO, CORE_NAME ": loaded %s (%s)\n", g_rom_path,
                nds_version_string());
 
-    /* Frontends read RETRO_MEMORY_SAVE_RAM as soon as load returns, but the
-     * cart mounts its backup buffer on the worker thread. Wait for it briefly
-     * so the pointer and size are valid. */
-    for (int ms = 0; ms < 2000 && g_emu_running && !nds_save_ram(g_nds); ms++)
-        usleep(1000);
-
+    /* The worker publishes only after the existing save has been loaded into
+     * its backing buffer. It then waits for the frontend's first retro_run,
+     * which follows the frontend's normal SRAM import after load returns. */
+    if (!wait_for_save_ram_ready()) {
+        retro_unload_game();
+        return false;
+    }
     return g_emu_running != 0;
 }
 
@@ -1067,9 +1138,16 @@ void retro_unload_game(void)
 {
     close_microphone();
     seedless_mic_reset();
-    if (!g_nds)
+    if (!g_nds) {
+        pthread_mutex_lock(&g_save_ram_mutex);
+        g_save_ram_data = NULL;
+        g_save_ram_size = 0;
+        g_save_ram_ready = 0;
+        pthread_mutex_unlock(&g_save_ram_mutex);
         return;
+    }
 
+    wake_save_ram_waiters();
     nds_quit(g_nds);
     /* Unblock a waiter stuck in nds_wait_screen. */
     nds_signal_screen(g_nds);
@@ -1083,6 +1161,11 @@ void retro_unload_game(void)
     g_emu_running = 0;
     g_emu_started = 0;
     seedless_audio_reset();
+    pthread_mutex_lock(&g_save_ram_mutex);
+    g_save_ram_data = NULL;
+    g_save_ram_size = 0;
+    g_save_ram_ready = 0;
+    pthread_mutex_unlock(&g_save_ram_mutex);
 }
 
 unsigned retro_get_region(void) { return RETRO_REGION_NTSC; }
@@ -1093,16 +1176,28 @@ void *retro_get_memory_data(unsigned id)
         return NULL;
     if (id == RETRO_MEMORY_SYSTEM_RAM)
         return nds_main_ram(g_nds);
-    if (id == RETRO_MEMORY_SAVE_RAM)
-        return nds_save_ram(g_nds);
+    if (id == RETRO_MEMORY_SAVE_RAM) {
+        void *data;
+        pthread_mutex_lock(&g_save_ram_mutex);
+        data = g_save_ram_ready && !g_load_finished ? g_save_ram_data : NULL;
+        pthread_mutex_unlock(&g_save_ram_mutex);
+        return data;
+    }
     return NULL;
 }
 
 size_t retro_get_memory_size(unsigned id)
 {
+    if (!g_nds)
+        return 0;
     if (id == RETRO_MEMORY_SYSTEM_RAM)
         return 4u * 1024u * 1024u;
-    if (id == RETRO_MEMORY_SAVE_RAM)
-        return nds_save_ram_size(g_nds);
+    if (id == RETRO_MEMORY_SAVE_RAM) {
+        size_t size;
+        pthread_mutex_lock(&g_save_ram_mutex);
+        size = g_save_ram_ready && !g_load_finished ? g_save_ram_size : 0;
+        pthread_mutex_unlock(&g_save_ram_mutex);
+        return size;
+    }
     return 0;
 }
