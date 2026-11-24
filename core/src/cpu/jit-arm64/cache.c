@@ -11,6 +11,9 @@
 #include "core_internals.h"
 #include "mem_access.h"
 #include "seedlessds/platform.h"
+#if defined(__linux__)
+#include <sys/mman.h>
+#endif
 
 /* The primary way lives in arm_t for a single-load hot path. Keep the second
  * way outside arm_t because generated code and save-state layouts depend on
@@ -1781,11 +1784,23 @@ void jit_arena_protect_rwx(unsigned char *base) {
     if (!core_mprotect)
         core_mprotect = (int (*)(void *, size_t, int))sym_libc_mprotect;
 
-    ((volatile uint64_t *)((jit_arena_t *)base)->unmapped_2)[0] = 0;
-    ((volatile uint64_t *)((jit_arena_t *)base)->unmapped_2)[1] = 0;
+    jit_arena_t *arena = (jit_arena_t *)base;
 
-    core_mprotect(((jit_arena_t *)base)->code_main_ram, JIT_CODE_MAIN_RAM_SIZE, 7);
-    core_mprotect(((jit_arena_t *)base)->code_itcm, JIT_CODE_ITCM_SIZE, 7);
+#if defined(__linux__) && defined(MADV_HUGEPAGE)
+    /* The AArch64 JIT walks a large, instruction-dense code arena. Encourage
+     * Linux THP for the contiguous code buffers to reduce iTLB pressure on
+     * small cores such as Cortex-A55. This is only an advice hint: kernels
+     * without THP support or available huge pages keep the regular mapping. */
+    (void)madvise(arena->code_main_ram,
+                  JIT_CODE_MAIN_RAM_SIZE + JIT_CODE_ITCM_SIZE + JIT_CODE_OTHER_SIZE,
+                  MADV_HUGEPAGE);
+#endif
+
+    ((volatile uint64_t *)arena->unmapped_2)[0] = 0;
+    ((volatile uint64_t *)arena->unmapped_2)[1] = 0;
+
+    core_mprotect(arena->code_main_ram, JIT_CODE_MAIN_RAM_SIZE, 7);
+    core_mprotect(arena->code_itcm, JIT_CODE_ITCM_SIZE, 7);
 }
 
 void jit_arena_regions_init(unsigned char *arena) {
