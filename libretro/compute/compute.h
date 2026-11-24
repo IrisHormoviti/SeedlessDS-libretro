@@ -11,6 +11,9 @@ typedef struct compute_profile {
     uint64_t submit_ns;
     uint64_t map_wait_ns;
     uint64_t copy_ns;
+    uint64_t gpu_ns;
+    uint64_t gpu_timed_draws;
+    uint64_t gpu_disjoint_draws;
 } compute_profile_t;
 
 /* Called before the emulation thread starts and after its workers stop. */

@@ -26,7 +26,8 @@
     X(USEPROGRAM, UseProgram) X(GETUNIFORMLOCATION, GetUniformLocation) \
     X(UNIFORM1UI, Uniform1ui) X(UNIFORM1UIV, Uniform1uiv) X(DISPATCHCOMPUTE, DispatchCompute) \
     X(MEMORYBARRIER, MemoryBarrier) X(MAPBUFFERRANGE, MapBufferRange) \
-    X(UNMAPBUFFER, UnmapBuffer) X(GETERROR, GetError) X(GETSTRING, GetString)
+    X(UNMAPBUFFER, UnmapBuffer) X(GETERROR, GetError) X(GETSTRING, GetString) \
+    X(GETINTEGERV, GetIntegerv) X(GETSTRINGI, GetStringi)
 #define MEMBER(type,name) PFNGL##type##PROC name;
 static struct { FUNCTIONS(MEMBER) } gl;
 typedef struct {
@@ -39,6 +40,35 @@ static GLuint edge_program;
 static GLint edge_depth, edge_palette;
 static size_t capacity[4];
 static compute_profile_t profile;
+
+#ifdef SEEDLESS_COMPUTE_PROFILE
+#define GL_TIME_ELAPSED_EXT 0x88BF
+#define GL_QUERY_RESULT_EXT 0x8866
+#define GL_GPU_DISJOINT_EXT 0x8FBB
+#define GL_NUM_EXTENSIONS 0x821D
+typedef void (*fn_gen_queries_ext)(GLsizei, GLuint *);
+typedef void (*fn_begin_query_ext)(GLenum, GLuint);
+typedef void (*fn_end_query_ext)(GLenum);
+typedef void (*fn_get_query_object_ui64v_ext)(GLuint, GLenum, GLuint64 *);
+static struct {
+    fn_gen_queries_ext gen;
+    fn_begin_query_ext begin;
+    fn_end_query_ext end;
+    fn_get_query_object_ui64v_ext result;
+    GLuint query;
+} gpu_timer;
+
+static bool has_extension(const char *wanted)
+{
+    GLint count = 0;
+    gl.GetIntegerv(GL_NUM_EXTENSIONS, &count);
+    for (GLint i = 0; i < count; i++) {
+        const char *name = (const char *)gl.GetStringi(GL_EXTENSIONS, (GLuint)i);
+        if (name && strcmp(name, wanted) == 0) return true;
+    }
+    return false;
+}
+#endif
 
 void compute_profile_reset(void)
 {
@@ -125,6 +155,23 @@ static bool init_resources(void)
 #define LOAD(type,name) gl.name = (PFNGL##type##PROC)eglGetProcAddress("gl" #name); if (!gl.name) return false;
     FUNCTIONS(LOAD)
     fprintf(stderr, "[SeedlessDS compute] %s, %s\n", gl.GetString(GL_RENDERER), gl.GetString(GL_VERSION));
+#ifdef SEEDLESS_COMPUTE_PROFILE
+    if (has_extension("GL_EXT_disjoint_timer_query")) {
+        gpu_timer.gen = (fn_gen_queries_ext)eglGetProcAddress("glGenQueriesEXT");
+        gpu_timer.begin = (fn_begin_query_ext)eglGetProcAddress("glBeginQueryEXT");
+        gpu_timer.end = (fn_end_query_ext)eglGetProcAddress("glEndQueryEXT");
+        gpu_timer.result = (fn_get_query_object_ui64v_ext)
+            eglGetProcAddress("glGetQueryObjectui64vEXT");
+        if (gpu_timer.gen && gpu_timer.begin && gpu_timer.end && gpu_timer.result) {
+            gpu_timer.gen(1, &gpu_timer.query);
+            if (!gpu_timer.query) memset(&gpu_timer, 0, sizeof(gpu_timer));
+        } else {
+            memset(&gpu_timer, 0, sizeof(gpu_timer));
+        }
+    }
+    fprintf(stderr, "[SeedlessDS compute] GPU timer queries %s\n",
+            gpu_timer.query ? "available" : "unavailable");
+#endif
     gl.GenBuffers(5, buffers);
     for (unsigned i = 0; i < 4; i++)
         gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, i, buffers[i]);
@@ -149,6 +196,9 @@ void compute_gl_close(void)
     memset(capacity, 0, sizeof(capacity));
     memset(raster, 0, sizeof(raster));
     edge_program = 0;
+#ifdef SEEDLESS_COMPUTE_PROFILE
+    memset(&gpu_timer, 0, sizeof(gpu_timer));
+#endif
 }
 
 static bool reserve_buffer(unsigned index, size_t bytes)
@@ -216,7 +266,18 @@ bool compute_gl_draw(const compute_span *spans, unsigned count, const uint32_t *
     uint64_t copy_start = upload_end;
     uint64_t copy_end = upload_end;
 #endif
+#ifdef SEEDLESS_COMPUTE_PROFILE
+    bool gpu_timed = false;
+#endif
     if (ok) {
+#ifdef SEEDLESS_COMPUTE_PROFILE
+        if (gpu_timer.query) {
+            GLint disjoint = 0;
+            gl.GetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint);
+            gpu_timer.begin(GL_TIME_ELAPSED_EXT, gpu_timer.query);
+            gpu_timed = true;
+        }
+#endif
         gl.DispatchCompute(SCREEN_W/WORKGROUP_X, SCREEN_H/WORKGROUP_Y, 1);
         if (edge_colors) {
             gl.MemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT);
@@ -229,6 +290,9 @@ bool compute_gl_draw(const compute_span *spans, unsigned count, const uint32_t *
             gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, buffers[0]);
             gl.BindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, buffers[1]);
         }
+#ifdef SEEDLESS_COMPUTE_PROFILE
+        if (gpu_timed) gpu_timer.end(GL_TIME_ELAPSED_EXT);
+#endif
         gl.MemoryBarrier(GL_BUFFER_UPDATE_BARRIER_BIT);
 #ifdef SEEDLESS_COMPUTE_PROFILE
         submit_end = profile_now_ns();
@@ -253,6 +317,21 @@ bool compute_gl_draw(const compute_span *spans, unsigned count, const uint32_t *
             copy_end = profile_now_ns();
 #endif
         }
+#ifdef SEEDLESS_COMPUTE_PROFILE
+        if (gpu_timed) {
+            /* The output map above has already waited for these dispatches. */
+            GLint disjoint = 0;
+            gl.GetIntegerv(GL_GPU_DISJOINT_EXT, &disjoint);
+            if (disjoint) {
+                __atomic_fetch_add(&profile.gpu_disjoint_draws, 1, __ATOMIC_RELAXED);
+            } else {
+                GLuint64 elapsed = 0;
+                gpu_timer.result(gpu_timer.query, GL_QUERY_RESULT_EXT, &elapsed);
+                __atomic_fetch_add(&profile.gpu_ns, elapsed, __ATOMIC_RELAXED);
+                __atomic_fetch_add(&profile.gpu_timed_draws, 1, __ATOMIC_RELAXED);
+            }
+        }
+#endif
     }
     GLenum error = gl.GetError();
     compute_context_release();

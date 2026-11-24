@@ -207,6 +207,17 @@ static bool benchmark(const struct retro_game_info *game, uint64_t warmup, uint6
                 "map wait %.2f us, copy/unmap %.2f us (%"PRIu64" draws)\n",
                 gpu.upload_ns * scale, gpu.submit_ns * scale,
                 gpu.map_wait_ns * scale, gpu.copy_ns * scale, gpu.draws);
+        if (gpu.gpu_timed_draws) {
+            double gpu_scale = 1.0 / (double)gpu.gpu_timed_draws / 1000.0;
+            fprintf(stderr, "GLES per-draw GPU elapsed: %.2f us (%"PRIu64
+                    " valid, %"PRIu64" disjoint timer samples)\n",
+                    gpu.gpu_ns * gpu_scale, gpu.gpu_timed_draws,
+                    gpu.gpu_disjoint_draws);
+        } else {
+            fprintf(stderr, "GLES GPU timer samples: 0 valid (%"PRIu64
+                    " disjoint); extension availability is logged at init\n",
+                    gpu.gpu_disjoint_draws);
+        }
     } else {
         fprintf(stderr, "GLES profiling: no compute draws in measured interval\n");
     }

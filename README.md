@@ -101,8 +101,11 @@ It also reports primary target-cache misses and secondary-way hits during the
 measured interval, showing what share of misses the second way rescues.
 For the compute renderer, configure with -DSEEDLESS_COMPUTE_PROFILE=ON to report
 average CPU time per draw for uploads, dispatch submission, buffer-map wait, and
-copy/unmap after the warmup interval. The map wait includes GPU completion and
-driver readback; dispatch submission time is CPU-side and is not a GPU timer.
+copy/unmap after the warmup interval. When the driver exposes
+GL_EXT_disjoint_timer_query, it also reports elapsed GPU time for the raster and
+edge compute passes; disjoint timer samples are excluded. The map wait includes
+GPU completion and driver readback; dispatch submission time is CPU-side and is
+not a GPU timer.
 
 The first video callback includes the replay tool's scheduler wait. Throughput
 is measured after the 120-frame warmup and excludes frontend pacing and KMS.
