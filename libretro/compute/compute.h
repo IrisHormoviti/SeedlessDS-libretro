@@ -5,11 +5,21 @@
 #include <stdint.h>
 #include "gpu/gpu.h"
 
+typedef struct compute_profile {
+    uint64_t draws;
+    uint64_t upload_ns;
+    uint64_t submit_ns;
+    uint64_t map_wait_ns;
+    uint64_t copy_ns;
+} compute_profile_t;
+
 /* Called before the emulation thread starts and after its workers stop. */
 void compute_start(bool verify);
 /* Read after the emulation and raster threads are quiescent. */
 bool compute_report(void);
 void compute_stop(void);
+void compute_profile_reset(void);
+void compute_profile_read(compute_profile_t *profile);
 bool compute_frame(gpu_t *gpu, gpu3d_t *scene, unsigned bank, uint8_t *dst);
 void compute_check(const uint8_t *reference);
 

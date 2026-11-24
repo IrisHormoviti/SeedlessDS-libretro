@@ -98,6 +98,8 @@ if(SEEDLESS_JIT_PROFILE)
     target_compile_definitions(recon_fn PRIVATE SEEDLESS_JIT_PROFILE=1)
 endif()
 
+option(SEEDLESS_COMPUTE_PROFILE "Measure GLES upload, dispatch, readback, and copy time" OFF)
+
 set(SEEDLESS_LIBRETRO_SOURCES
     libretro/libretro.c
     libretro/opensl_stub.c
@@ -136,6 +138,9 @@ target_compile_definitions(seedlessds_libretro PRIVATE
     _GNU_SOURCE
     SEEDLESS_LIBRETRO=1
 )
+if(SEEDLESS_COMPUTE_PROFILE)
+    target_compile_definitions(seedlessds_libretro PRIVATE SEEDLESS_COMPUTE_PROFILE=1)
+endif()
 
 target_compile_options(seedlessds_libretro PRIVATE
     -O2

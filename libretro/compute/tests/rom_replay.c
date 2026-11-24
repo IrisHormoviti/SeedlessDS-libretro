@@ -148,6 +148,9 @@ static bool benchmark(const struct retro_game_info *game, uint64_t warmup, uint6
             " us total\n", warmup_blocks - boot_blocks,
             warmup_analysis_us - boot_analysis_us);
 #endif
+#if defined(SEEDLESS_COMPUTE_PROFILE)
+    compute_profile_reset();
+#endif
     uint64_t output_start = status.output_frames;
     uint64_t dispatch_start = status.dispatches;
     uint64_t target = status.frames + frames;
@@ -159,6 +162,20 @@ static bool benchmark(const struct retro_game_info *game, uint64_t warmup, uint6
             frames, seconds, frames / seconds);
     fprintf(stderr, "Core output frames: %"PRIu64"; 3D dispatches: %"PRIu64"\n",
             status.output_frames - output_start, status.dispatches - dispatch_start);
+#if defined(SEEDLESS_COMPUTE_PROFILE)
+    compute_profile_t gpu;
+    compute_profile_read(&gpu);
+    if (gpu.draws) {
+        double scale = 1.0 / (double)gpu.draws / 1000.0;
+        fprintf(stderr,
+                "GLES per-draw CPU time: upload %.2f us, dispatch submit %.2f us, "
+                "map wait %.2f us, copy/unmap %.2f us (%"PRIu64" draws)\n",
+                gpu.upload_ns * scale, gpu.submit_ns * scale,
+                gpu.map_wait_ns * scale, gpu.copy_ns * scale, gpu.draws);
+    } else {
+        fprintf(stderr, "GLES profiling: no compute draws in measured interval\n");
+    }
+#endif
     return true;
 }
 

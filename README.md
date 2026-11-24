@@ -88,6 +88,10 @@ build-device/libretro/compute/seedless_rom_replay \
 Configure the build with -DSEEDLESS_JIT_PROFILE=ON to also report cold-start
 block analysis count and time, plus blocks analyzed during warmup. The option
 adds timing only around JIT compilation misses and is off in normal builds.
+For the compute renderer, configure with -DSEEDLESS_COMPUTE_PROFILE=ON to report
+average CPU time per draw for uploads, dispatch submission, buffer-map wait, and
+copy/unmap after the warmup interval. The map wait includes GPU completion and
+driver readback; dispatch submission time is CPU-side and is not a GPU timer.
 
 The first video callback includes the replay tool's scheduler wait. Throughput
 is measured after the 120-frame warmup and excludes frontend pacing and KMS.
