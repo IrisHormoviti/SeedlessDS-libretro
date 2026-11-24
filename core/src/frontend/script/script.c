@@ -905,6 +905,7 @@ uint32_t script_lua_set_ds_memory_arm7_32(void *L)
 _Static_assert(offsetof(nds_t, arm9) == JIT_DISPATCH_ARM9_OFFSET, "arm9 offset");
 _Static_assert(offsetof(nds_t, arm7) == JIT_DISPATCH_ARM7_OFFSET, "arm7 offset");
 _Static_assert(offsetof(arm_t, block_lookup) == 0x80, "JIT target cache offset");
+_Static_assert(sizeof(((arm_t *)0)->block_lookup) == 0x2000, "JIT cache row size");
 _Static_assert(offsetof(arm_t, is_arm9) == 0x210c, "JIT CPU selector offset");
 _Static_assert(offsetof(arm_t, pc) == 0x23bc, "JIT saved PC offset");
 extern uint64_t jit_block_lookup_secondary[2][ARM_BLOCK_LOOKUP]
@@ -946,18 +947,19 @@ __asm__(
 "    add x1, x11, w1, uxtw                     \n"
 "    br x1                                     \n"
 "jit_dispatch_block_cache:\n"
-"    ubfx w1, w0, #2, #10                      \n"
-"    add x1, x28, w1, uxtw #3                  \n"
+/* Keep the slot in w4 while x1 holds the primary entry address. */
+"    ubfx w4, w0, #2, #10                      \n"
+"    add x1, x28, w4, uxtw #3                  \n"
 "    ldr x2, [x1, #0x80]                       \n"
 "    sub w3, w2, w0                            \n"
 "    cbz w3, 2f                                \n"
 JIT_PROFILE_DISPATCH_COUNT("0")
 "    adrp x3, jit_block_lookup_secondary       \n"
 "    add x3, x3, :lo12:jit_block_lookup_secondary\n"
-"    ldr w4, [x28, #0x210c]                    \n"
-"    cbz w4, 1f                                \n"
+"    ldr w5, [x28, #0x210c]                    \n"
+"    cbz w5, 1f                                \n"
 "    add x3, x3, #2, lsl #12                  \n"
-"1:  add x3, x3, w1, uxtw #3                  \n"
+"1:  add x3, x3, w4, uxtw #3                  \n"
 "    ldr x4, [x3]                              \n"
 "    sub w5, w4, w0                            \n"
 "    cbnz w5, L_jit_dispatch_lookup_or_compile_1\n"
