@@ -107,6 +107,9 @@ driver readback; dispatch submission time is CPU-side and is not a GPU timer.
 The first video callback includes the replay tool's scheduler wait. Throughput
 is measured after the 120-frame warmup and excludes frontend pacing and KMS.
 Use `compute` in place of `software` to measure the GLES path with the same ROM.
+The persistent JIT warm-start manifest keeps up to 256 validated guest PCs and
+precompiles all retained entries on the next normal JIT-enabled boot;
+savestate restores skip this prewarm.
 
 BananaLinux builds BananaDS at `e54aaa8e2693352ad9f33a0d3d75ea4b887f1957`
 with a patched melonDS core. Build that source as a separate baseline so its JIT,
