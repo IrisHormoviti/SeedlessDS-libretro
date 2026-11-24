@@ -92,10 +92,25 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "disabled"
    },
    {
+      "seedlessds_resolution",
+      "Internal Resolution",
+      NULL,
+      "Render and present both screens at 1× (256×192 each) or at 2×/3×. Higher values are much heavier on CPU; some frontends must be restarted to resize the window.",
+      NULL,
+      "video",
+      {
+         { "1x", "1× (native)" },
+         { "2x", "2×" },
+         { "3x", "3×" },
+         { NULL, NULL },
+      },
+      "1x"
+   },
+   {
       "seedlessds_hires_3d",
       "High-Resolution 3D",
       NULL,
-      "Render 3D at 2× native resolution. Much heavier on CPU.",
+      "Render 3D at 2× native resolution and reduce it to the 1× screens. Much heavier on CPU; ignored when Internal Resolution is above 1×.",
       NULL,
       "video",
       {

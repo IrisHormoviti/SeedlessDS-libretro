@@ -115,6 +115,73 @@ int nds_screens_rgba(nds_t *nds, void *top, void *bottom)
     return 1;
 }
 
+/* Full-resolution copy for frontends that present the un-reduced page. The
+ * engine composes into a scale² page; `nds_screens_rgba` reads it as if it
+ * were 1×, so a caller that wants the extra detail must ask for it and must
+ * also have set the internal resolution (native pages) up front. */
+int nds_screens_rgba_scale(nds_t *nds, void *top, void *bottom, unsigned scale)
+{
+    frontend_t *g = FRONTEND;
+    const uint8_t *s0;
+    const uint8_t *s1;
+    uint8_t *d0 = top;
+    uint8_t *d1 = bottom;
+    unsigned width;
+    unsigned height;
+    size_t row;
+    unsigned x;
+    unsigned y;
+
+    if (scale <= 1u)
+        return nds_screens_rgba(nds, top, bottom);
+    if (screens_are_16bit(g))
+        return 0;
+
+    s0 = video_out_screen_buffer(0);
+    s1 = video_out_screen_buffer(1);
+    if (s0 == NULL || s1 == NULL)
+        return 0;
+
+    width = SCREEN_WIDTH * scale;
+    height = SCREEN_HEIGHT * scale;
+    row = (size_t)width * 4u;
+
+    for (y = 0; y < height; y++) {
+        const uint8_t *a = s0 + (size_t)y * row;
+        const uint8_t *b = s1 + (size_t)y * row;
+        uint8_t *p = d0 + (size_t)y * row;
+        uint8_t *q = d1 + (size_t)y * row;
+
+        for (x = 0; x < width; x++) {
+            wr32(p + (size_t)x * 4u, from_bgra(rd32(a + (size_t)x * 4u)));
+            wr32(q + (size_t)x * 4u, from_bgra(rd32(b + (size_t)x * 4u)));
+        }
+    }
+    return 1;
+}
+
+nds_frame_size_t nds_frame_size(nds_t *nds)
+{
+    nds_frame_size_t size;
+
+    (void)nds;
+    recon_native_read();
+    size.scale = recon_native ? recon_scale_output() : 1u;
+    size.width = SCREEN_WIDTH * size.scale;
+    size.height = SCREEN_HEIGHT * size.scale;
+    return size;
+}
+
+void nds_set_internal_resolution(nds_t *nds, unsigned scale)
+{
+    (void)nds;
+    if (scale < 1u)
+        scale = 1u;
+    if (scale > 8u)
+        scale = 8u;
+    recon_set_scale(scale, scale > 1u);
+}
+
 int nds_screenshot(nds_t *nds, void *rgba, size_t size)
 {
     frontend_t *g = FRONTEND;
