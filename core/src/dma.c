@@ -160,6 +160,7 @@ uint64_t dma_channel_run_transfer(dma_t *machine, dma_channel_t *channel)
             fn_write  write_fn = 0;
             const uint32_t *coarse, *fine;
             uint8_t class;
+            int direct_source = 0, direct_destination = 0;
 
             if (step_o > 0) {
                 uint32_t lim = rd32(ent_o);
@@ -194,6 +195,7 @@ uint64_t dma_channel_run_transfer(dma_t *machine, dma_channel_t *channel)
                 po = ((fn_ptr)rd_ptr(ent_o + 8))(arena, org);
             } else if (class == 0) {
 
+                direct_source = 1;
                 uint32_t off = (step_o != 0) ? off_o : (rd32(ent_o) & org);
                 po = (unsigned char *)rd_ptr(ent_o + 8) + off;
             } else {
@@ -208,6 +210,7 @@ uint64_t dma_channel_run_transfer(dma_t *machine, dma_channel_t *channel)
                 pd = ((fn_ptr)rd_ptr(ent_d + 0x20))(arena, dst);
             } else if (class == 0) {
 
+                direct_destination = 1;
                 pd = (unsigned char *)rd_ptr(ent_d + 0x20) + (rd32(ent_d) & dst);
             } else {
                 pd = ((bus_t *)arena)->scratch_page;
@@ -225,24 +228,43 @@ uint64_t dma_channel_run_transfer(dma_t *machine, dma_channel_t *channel)
             {
                 uint32_t i = run;
                 uint32_t dir_o = org, dir_d = dst;
-                do {
-                    uint32_t v;
-                    if (flags & 1) {
-                        v = read_fn(arena, rd32(ent_o) & dir_o);
-                    } else {
-                        v = (width == 2) ? (uint32_t)rd16(po) : rd32(po);
-                        po += step_o * (int)width;
+                int copied = 0;
+
+                if (bytes >= 4096 && direct_source && direct_destination && flags == 0 &&
+                    step_o == 1 && step_d == 1 && ent_o == ent_d &&
+                    po != NULL && pd != NULL &&
+                    rd_ptr(ent_o + 8) == rd_ptr(ent_d + 0x20)) {
+                    uintptr_t src = (uintptr_t)po;
+                    uintptr_t dst_ptr = (uintptr_t)pd;
+                    int nonoverlap = src <= dst_ptr
+                        ? dst_ptr - src >= bytes
+                        : src - dst_ptr >= bytes;
+                    if (nonoverlap) {
+                        memcpy(pd, po, bytes);
+                        copied = 1;
                     }
-                    if (flags & 2) {
-                        write_fn(arena, rd32(ent_d) & dir_d, v);
-                    } else {
-                        if (width == 2) wr16(pd, (uint16_t)v);
-                        else            wr32(pd, v);
-                        pd += step_d * (int)width;
-                    }
-                    dir_o += (uint32_t)(step_o * (int)width);
-                    dir_d += (uint32_t)(step_d * (int)width);
-                } while (--i);
+                }
+
+                if (!copied) {
+                    do {
+                        uint32_t v;
+                        if (flags & 1) {
+                            v = read_fn(arena, rd32(ent_o) & dir_o);
+                        } else {
+                            v = (width == 2) ? (uint32_t)rd16(po) : rd32(po);
+                            po += step_o * (int)width;
+                        }
+                        if (flags & 2) {
+                            write_fn(arena, rd32(ent_d) & dir_d, v);
+                        } else {
+                            if (width == 2) wr16(pd, (uint16_t)v);
+                            else            wr32(pd, v);
+                            pd += step_d * (int)width;
+                        }
+                        dir_o += (uint32_t)(step_o * (int)width);
+                        dir_d += (uint32_t)(step_d * (int)width);
+                    } while (--i);
+                }
             }
 
             org += (uint32_t)(step_o * (int)bytes);
