@@ -160,37 +160,69 @@ void jit_warm_cache_begin(unsigned char *machine)
     close_file(file);
 }
 
+static void jit_warm_cache_seed_entry(arm_t *cpu, uint32_t load_address,
+                                      uint32_t load_size)
+{
+    uint32_t pc = cpu->pc;
+    uint32_t entry = pc & ~1u;
+    if (!load_size || entry < load_address ||
+        (uint64_t)entry >= (uint64_t)load_address + load_size)
+        return;
+
+    if (jit_block_lookup(cpu, pc)) {
+#if defined(SEEDLESS_JIT_PROFILE)
+        jit_warm_profile_already_compiled++;
+#endif
+        return;
+    }
+#if defined(SEEDLESS_JIT_PROFILE)
+    jit_warm_profile_candidates++;
+#endif
+    (void)jit_cache_lookup_or_compile(cpu, pc);
+}
+
 void jit_warm_cache_preload(unsigned char *machine, int allow)
 {
-    if (!jit_warm_cache_enabled || !allow ||
-        ((nds_t *)machine)->runtime.jit_enabled == 0)
+    nds_t *nds = (nds_t *)machine;
+    if (!allow || nds->runtime.jit_enabled == 0)
         return;
 
 #if defined(SEEDLESS_JIT_PROFILE)
     jit_warm_profile_loaded = jit_warm_cache_preload_count;
     jit_warm_profile_preloading = 1;
 #endif
-    for (uint32_t i = 0; i < jit_warm_cache_preload_count; i++) {
-        jit_warm_cache_entry_t *entry = &jit_warm_cache_preload_entries[i];
-        arm_t *cpu = entry->cpu ? &((nds_t *)machine)->arm9 :
-                                  &((nds_t *)machine)->arm7;
-        if (entry->signature == 0 ||
-            jit_warm_cache_signature(cpu, entry->pc) != entry->signature) {
+    if (jit_warm_cache_enabled) {
+        for (uint32_t i = 0; i < jit_warm_cache_preload_count; i++) {
+            jit_warm_cache_entry_t *entry = &jit_warm_cache_preload_entries[i];
+            arm_t *cpu = entry->cpu ? &nds->arm9 : &nds->arm7;
+            if (entry->signature == 0 ||
+                jit_warm_cache_signature(cpu, entry->pc) != entry->signature) {
 #if defined(SEEDLESS_JIT_PROFILE)
-            jit_warm_profile_signature_skips++;
+                jit_warm_profile_signature_skips++;
 #endif
-            continue;
+                continue;
+            }
+            if (jit_block_lookup(cpu, entry->pc) != NULL) {
+#if defined(SEEDLESS_JIT_PROFILE)
+                jit_warm_profile_already_compiled++;
+#endif
+                continue;
+            }
+#if defined(SEEDLESS_JIT_PROFILE)
+            jit_warm_profile_candidates++;
+#endif
+            (void)jit_cache_lookup_or_compile(cpu, entry->pc);
         }
-        if (jit_block_lookup(cpu, entry->pc) != NULL) {
-#if defined(SEEDLESS_JIT_PROFILE)
-            jit_warm_profile_already_compiled++;
-#endif
-            continue;
-        }
-#if defined(SEEDLESS_JIT_PROFILE)
-        jit_warm_profile_candidates++;
-#endif
-        (void)jit_cache_lookup_or_compile(cpu, entry->pc);
+    }
+
+    /* Header boot exposes both executable ranges before the first scheduler
+     * slice. Seed their entry blocks now; the existing JIT links reachable
+     * direct branches, while overlays and modified code retain runtime JIT. */
+    if (!nds->config.boot_from_firmware && nds->cart.rom && nds->cart.rom->data &&
+        nds->cart.rom->size >= CART_HEADER_SIZE) {
+        const uint8_t *header = nds->cart.rom->data;
+        jit_warm_cache_seed_entry(&nds->arm9, rd32(header + 40), rd32(header + 44));
+        jit_warm_cache_seed_entry(&nds->arm7, rd32(header + 56), rd32(header + 60));
     }
 #if defined(SEEDLESS_JIT_PROFILE)
     jit_warm_profile_preloading = 0;

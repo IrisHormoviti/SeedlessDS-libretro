@@ -110,6 +110,10 @@ Use `compute` in place of `software` to measure the GLES path with the same ROM.
 The persistent JIT warm-start manifest keeps up to 256 validated guest PCs and
 precompiles all retained entries on the next normal JIT-enabled boot;
 savestate restores skip this prewarm.
+On a direct header boot, Seedless also seeds any ARM9 and ARM7 executable
+entry points that the manifest did not already warm. The JIT's existing
+direct-branch linking discovers reachable blocks; modified code and overlays
+still use normal runtime compilation and invalidation.
 
 BananaLinux builds BananaDS at `e54aaa8e2693352ad9f33a0d3d75ea4b887f1957`
 with a patched melonDS core. Build that source as a separate baseline so its JIT,

@@ -144,7 +144,7 @@ static bool benchmark(const struct retro_game_info *game, uint64_t warmup, uint6
                                 &warm_compiled_blocks);
     if (warm_loaded || warm_signature_skips || warm_already_compiled ||
         warm_candidates || warm_compiled_blocks)
-        fprintf(stderr, "JIT warm-cache prewarm: %"PRIu64" loaded, %"PRIu64
+        fprintf(stderr, "JIT startup precompile: %"PRIu64" manifest entries loaded, %"PRIu64
                 " changed-signature skips, %"PRIu64" already compiled, %"PRIu64
                 " candidates, %"PRIu64" blocks compiled\n", warm_loaded,
                 warm_signature_skips, warm_already_compiled, warm_candidates,
