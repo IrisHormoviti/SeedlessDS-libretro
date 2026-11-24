@@ -14,6 +14,27 @@ extern unsigned int bus_read16(unsigned char *table, unsigned int dir);
 extern uint32_t     arm_thumb_to_arm(uint32_t media, void *output);
 extern void         bus_range_mark_written(unsigned char *ctx, uint32_t dir, uint32_t size);
 extern void        *jit_block_lookup(void *ctx, uint32_t dir);
+
+/* JIT analysis reads a run of guest instructions from the bus. Most code
+ * pages already have a direct page-table mapping, so avoid an out-of-line
+ * bus_read32/bus_read16 call for those reads. Keep the normal helper for
+ * unmapped, handled, and otherwise non-direct pages. */
+static inline uint32_t jit_read_code32(pagetable_t *table, uint32_t address)
+{
+    uint64_t base = table->page[address >> PAGETABLE_PAGE_SHIFT] << 2;
+    if (base != 0)
+        return *(const uint32_t *)(uintptr_t)(base + (uint64_t)address);
+    return bus_read32((unsigned char *)table, address);
+}
+
+static inline uint32_t jit_read_code16(pagetable_t *table, uint32_t address)
+{
+    uint64_t base = table->page[address >> PAGETABLE_PAGE_SHIFT] << 2;
+    if (base != 0)
+        return *(const uint16_t *)(uintptr_t)(base + (uint64_t)address);
+    return bus_read16((unsigned char *)table, address);
+}
+
 static void *(*core_malloc)(unsigned long);
 static void *(*core_realloc)(void *, unsigned long);
 static void  (*core_free)(void *);
@@ -91,7 +112,7 @@ uint32_t *jit_block_analyze(void *ctx_v, uint32_t dir, uint32_t thumb_arg)
     unsigned char *ents = d.arena->record_cursor;
     uint32_t v210c_b;
     uint32_t mode, thumb_b;
-    unsigned char *table_mem = (unsigned char *)&CPU(ctx)->pagetable;
+    pagetable_t *table_mem = &CPU(ctx)->pagetable;
     uint32_t prev_wr;
     uint32_t thumb;
 
@@ -119,7 +140,7 @@ uint32_t *jit_block_analyze(void *ctx_v, uint32_t dir, uint32_t thumb_arg)
     if (thumb != 0) goto L36738;
 
 L_1:
-    w0 = bus_read32(table_mem, w23);
+    w0 = jit_read_code32(table_mem, w23);
     w8 = w23 + 8;
     w23 = w23 + 4;
     w28 = (w0 != 0) ? 0u : w28 + 1u;
@@ -130,7 +151,7 @@ L_1:
 
 L36738:
     {
-        uint32_t media = bus_read16(table_mem, w23);
+        uint32_t media = jit_read_code16(table_mem, w23);
         uint32_t aux = 0;
         uint32_t media16 = media & 0xffff;
         w28 = (media16 != 0) ? 0u : w28 + 1u;

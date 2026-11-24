@@ -70,6 +70,11 @@ ARM logical immediates. This replaces the portable bit-scanning and bit-reversal
 sequences and reduces work during block compilation. The guest-code output is
 unchanged.
 
+JIT block analysis reads instructions through the page table directly when the
+code page has a direct mapping, retaining the bus helper for handled or unmapped
+pages. This avoids a helper call for each decoded instruction on the common
+ROM/RAM path without changing guest memory mapping behavior.
+
 With the Linux GLES build, use the ROM replay tool to collect startup and
 scheduler throughput from the same fresh process. Use the same BIOS, saves and
 benchmark interval for both builds.
