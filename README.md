@@ -123,11 +123,10 @@ still use normal runtime compilation and invalidation.
 
 In addition to the warm-start manifest, the AArch64 JIT now writes a persistent
 native snapshot in the current user's private `~/.cache/seedless-native-jit`
-directory. It
-contains generated code and lookup/invalidation state from blocks observed in
-prior play sessions. On a
-normal ROM boot, Seedless restores it only when the compiler/emitter ABI, bus
-mapping, ROM identity, and full guest-instruction signatures all match; any
+directory. It contains generated code and lookup/invalidation state from
+blocks observed in prior play sessions. On a normal ROM boot, Seedless restores
+it only when the compiler/emitter ABI, bus mapping, ROM identity, and full
+guest-instruction signatures all match; any
 failure leaves the standard JIT path active. It also validates guest data
 ranges folded into native code, includes directly compiled branch targets, and
 rebuilds page write watches on restore. Saves use a temporary file and atomic
@@ -136,7 +135,9 @@ restore is disabled when a private home cache directory is unavailable.
 Savestate loads continue to use their own memory-aware warm path.
 The core does not scan or compile the whole ROM before first play, so cold
 launch remains lazy. With `SEEDLESS_JIT_PROFILE` enabled, ROM replay reports
-how many native blocks were restored.
+how many native blocks were restored, and shutdown logs why a native snapshot
+was saved or skipped (including cache completeness, mapping, ITCM, and file I/O
+checks).
 
 BananaLinux builds BananaDS at `e54aaa8e2693352ad9f33a0d3d75ea4b887f1957`
 with a patched melonDS core. Build that source as a separate baseline so its JIT,

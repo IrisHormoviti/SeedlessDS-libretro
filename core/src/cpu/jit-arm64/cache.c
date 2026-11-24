@@ -152,6 +152,16 @@ static uint32_t jit_native_compile_overflow_depth;
 static uint8_t jit_native_cache_complete;
 static uint64_t jit_native_cache_initial_mapping_signature;
 #if defined(SEEDLESS_JIT_PROFILE)
+extern void seedless_libretro_native_cache_report(const char *status,
+    uint32_t blocks, uint32_t dependencies, uint32_t itcm_variants, int error);
+#define JIT_NATIVE_CACHE_REPORT(status, error, nds) \
+    seedless_libretro_native_cache_report((status), jit_native_cache_block_count, \
+        jit_native_cache_dependency_count, (nds)->jit_arena.itcm_variant_count, \
+        (error))
+#else
+#define JIT_NATIVE_CACHE_REPORT(status, error, nds) ((void)0)
+#endif
+#if defined(SEEDLESS_JIT_PROFILE)
 static uint64_t jit_warm_profile_loaded;
 static uint64_t jit_warm_profile_signature_skips;
 static uint64_t jit_warm_profile_already_compiled;
@@ -951,24 +961,47 @@ static void jit_native_cache_prune_live(nds_t *nds)
 
 static void jit_native_cache_save(nds_t *nds)
 {
-    if (!jit_warm_cache_enabled || jit_native_cache_root_fd < 0 ||
-        !jit_native_cache_path[0] ||
-        !jit_native_cache_complete || jit_native_cache_block_count == 0 ||
-        jit_native_cache_dependency_count == 0 ||
-        nds->jit_arena.itcm_variant_count != 0 ||
-        nds->bus.slot2_rom || nds->bus.slot2_page_bits || nds->bus.slot2_code_bits)
+    if (!jit_warm_cache_enabled) {
+        JIT_NATIVE_CACHE_REPORT("warm-cache-disabled", 0, nds);
         return;
+    }
+    if (jit_native_cache_root_fd < 0 || !jit_native_cache_path[0]) {
+        JIT_NATIVE_CACHE_REPORT("cache-root-or-rom-path-unavailable", 0, nds);
+        return;
+    }
+    if (!jit_native_cache_complete) {
+        JIT_NATIVE_CACHE_REPORT("native-cache-incomplete", 0, nds);
+        return;
+    }
+    if (jit_native_cache_block_count == 0 ||
+        jit_native_cache_dependency_count == 0) {
+        JIT_NATIVE_CACHE_REPORT("no-validated-native-blocks", 0, nds);
+        return;
+    }
+    if (nds->jit_arena.itcm_variant_count != 0) {
+        JIT_NATIVE_CACHE_REPORT("itcm-variants-present", 0, nds);
+        return;
+    }
+    if (nds->bus.slot2_rom || nds->bus.slot2_page_bits ||
+        nds->bus.slot2_code_bits) {
+        JIT_NATIVE_CACHE_REPORT("slot2-mapping-active", 0, nds);
+        return;
+    }
     /* Invalidation bitmaps are indexed through the live bus mapping. Persist
      * them only when that mapping still matches the post-reset layout. */
     if (!jit_native_cache_initial_mapping_signature ||
         jit_native_mapping_signature(nds) !=
-        jit_native_cache_initial_mapping_signature)
+        jit_native_cache_initial_mapping_signature) {
+        JIT_NATIVE_CACHE_REPORT("bus-mapping-changed", 0, nds);
         return;
+    }
 
     jit_native_cache_prune_live(nds);
     if (!jit_native_cache_complete || jit_native_cache_block_count == 0 ||
-        jit_native_cache_dependency_count == 0)
+        jit_native_cache_dependency_count == 0) {
+        JIT_NATIVE_CACHE_REPORT("prune-invalidated-or-removed-all-blocks", 0, nds);
         return;
+    }
 
     size_t blocks_size = (size_t)jit_native_cache_block_count *
                          sizeof(jit_native_cache_block_t);
@@ -981,8 +1014,10 @@ static void jit_native_cache_save(nds_t *nds)
     fn_malloc allocate = (fn_malloc)sym_libc_malloc;
     fn_free release = (fn_free)sym_libc_free;
     uint8_t *payload = (uint8_t *)allocate(payload_size);
-    if (!payload)
+    if (!payload) {
+        JIT_NATIVE_CACHE_REPORT("snapshot-allocation-failed", errno, nds);
         return;
+    }
 
     jit_arena_t *snapshot = (jit_arena_t *)payload;
     memcpy(snapshot, &nds->jit_arena, sizeof(*snapshot));
@@ -993,12 +1028,14 @@ static void jit_native_cache_save(nds_t *nds)
             !jit_native_cache_encode_pointer(base, snapshot->region[i].table,
                                              &snapshot->region[i].table)) {
             release(payload);
+            JIT_NATIVE_CACHE_REPORT("arena-pointer-out-of-range", 0, nds);
             return;
         }
     }
     if (!jit_native_cache_encode_pointer(base, snapshot->record_cursor,
                                          &snapshot->record_cursor)) {
         release(payload);
+        JIT_NATIVE_CACHE_REPORT("record-cursor-out-of-range", 0, nds);
         return;
     }
     memset(snapshot->records, 0, sizeof snapshot->records);
@@ -1011,6 +1048,7 @@ static void jit_native_cache_save(nds_t *nds)
         if (block && !jit_native_cache_encode_pointer(
                          base, block, &snapshot->itcm_variant[i].block)) {
             release(payload);
+            JIT_NATIVE_CACHE_REPORT("itcm-pointer-out-of-range", 0, nds);
             return;
         }
     }
@@ -1045,8 +1083,11 @@ static void jit_native_cache_save(nds_t *nds)
         if (fd >= 0) {
             void *file = ((void *(*)(int, const char *))sym_libc_fdopen)(fd, "wb");
             if (!file) {
+                int saved_errno = errno;
                 close(fd);
                 unlinkat(jit_native_cache_root_fd, temporary, 0);
+                JIT_NATIVE_CACHE_REPORT("temporary-file-fdopen-failed",
+                                        saved_errno, nds);
             } else {
                 size_t (*write_file)(const void *, size_t, size_t, void *) =
                     (size_t (*)(const void *, size_t, size_t, void *))sym_libc_fwrite;
@@ -1065,11 +1106,20 @@ static void jit_native_cache_save(nds_t *nds)
                                    jit_native_cache_root_fd,
                                    jit_native_cache_path) == 0) {
                     (void)fsync(jit_native_cache_root_fd);
+                    JIT_NATIVE_CACHE_REPORT("saved", 0, nds);
                 } else {
+                    int saved_errno = errno;
                     unlinkat(jit_native_cache_root_fd, temporary, 0);
+                    JIT_NATIVE_CACHE_REPORT(ok ? "snapshot-rename-failed" :
+                                             "snapshot-write-flush-or-close-failed",
+                                             saved_errno, nds);
                 }
             }
+        } else {
+            JIT_NATIVE_CACHE_REPORT("temporary-file-open-failed", errno, nds);
         }
+    } else {
+        JIT_NATIVE_CACHE_REPORT("temporary-file-name-too-long", 0, nds);
     }
     release(payload);
 }

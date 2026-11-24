@@ -67,6 +67,14 @@ static int g_stylus_touching;
  * shows the stylus, so drawing it there only obscures the game. */
 static int g_cursor_from_stick;
 extern void jit_native_cache_set_root(const char *path);
+void seedless_libretro_native_cache_report(const char *status,
+    uint32_t blocks, uint32_t dependencies, uint32_t itcm_variants, int error)
+{
+    if (log_cb)
+        log_cb(RETRO_LOG_INFO,
+            CORE_NAME ": native JIT cache save: %s blocks=%u deps=%u itcm=%u errno=%d\n",
+            status, blocks, dependencies, itcm_variants, error);
+}
 
 /* Called by the core after cart backup mounting has fully initialized RAM. */
 void seedless_libretro_publish_save_ram(void *data, size_t size)
