@@ -45,10 +45,10 @@ static uint64_t jit_native_hash_u64(uint64_t hash, uint64_t value);
 #endif
 #define JIT_NATIVE_CACHE_MAX_BLOCKS 0x8000u
 #define JIT_NATIVE_CACHE_MAX_DEPENDENCIES 0x20000u
-/* The serialized per-block dependency count is one byte. Allow its full range
- * so one complex block cannot disable snapshots for the entire session. The
- * 64 compile frames reserve about 128 KiB for these temporary ranges. */
-#define JIT_NATIVE_CACHE_MAX_BLOCK_DEPENDENCIES 255u
+/* A block can depend on many disjoint guest ranges. Keep a generous bounded
+ * limit so one complex block cannot disable snapshots for the whole session.
+ * The 64 compile frames reserve about 2 MiB for these temporary ranges. */
+#define JIT_NATIVE_CACHE_MAX_BLOCK_DEPENDENCIES 4096u
 #define JIT_NATIVE_CACHE_COMPILE_DEPTH 64u
 
 typedef struct jit_warm_cache_entry {
@@ -92,7 +92,7 @@ typedef struct jit_native_cache_block {
     uint32_t dependency_first;
     uint16_t halfwords;
     uint8_t cpu;
-    uint8_t dependency_count;
+    uint16_t dependency_count;
     uint64_t signature;
 } jit_native_cache_block_t;
 
