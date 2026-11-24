@@ -75,6 +75,10 @@ code page has a direct mapping, retaining the bus helper for handled or unmapped
 pages. This avoids a helper call for each decoded instruction on the common
 ROM/RAM path without changing guest memory mapping behavior.
 
+The ARM64 analyzer keeps records for common blocks in a small stack buffer,
+spilling only larger blocks to the heap. It also avoids shrinking this
+temporary buffer after every block compilation.
+
 With the Linux GLES build, use the ROM replay tool to collect startup and
 scheduler throughput from the same fresh process. Use the same BIOS, saves and
 benchmark interval for both builds.

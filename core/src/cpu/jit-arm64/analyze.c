@@ -90,6 +90,12 @@ uint32_t *jit_block_analyze(void *ctx_v, uint32_t dir, uint32_t thumb_arg)
 
     uint32_t v210c = CPU(ctx)->is_arm9;
 
+    /* Most translated blocks fit in this small working set. Keep their
+     * analysis records on the stack and allocate only when a block grows
+     * beyond it. */
+    jit_instruction_record_t stack_records[0x10];
+    uint8_t records_heap = 0;
+
     w19 = dir >> 25;
     d.arena    = CPU(ctx)->jit_arena;
     d.pc     = dir;
@@ -107,7 +113,7 @@ uint32_t *jit_block_analyze(void *ctx_v, uint32_t dir, uint32_t thumb_arg)
         }
     }
 
-    jit_instruction_record_t *buf = (jit_instruction_record_t *)malloc_core(0x10 * sizeof(jit_instruction_record_t));
+    jit_instruction_record_t *buf = stack_records;
     uint64_t cap = 0x10;
     unsigned char *ents = d.arena->record_cursor;
     uint32_t v210c_b;
@@ -935,8 +941,18 @@ L37378:
     if (w8 > 0xf) w22 = 0xf;
     x19u = x27 + 1;
     if (x19u == (uint64_t)(uint32_t)cap) {
-        cap = (uint32_t)(cap << 1);
-        d.records = (jit_instruction_record_t *)realloc_core(d.records, (unsigned long)(cap << 5));
+        uint32_t next_cap = (uint32_t)(cap << 1);
+        unsigned long next_size = (unsigned long)next_cap << 5;
+        if (records_heap) {
+            d.records = (jit_instruction_record_t *)realloc_core(d.records, next_size);
+        } else {
+            jit_instruction_record_t *grown =
+                (jit_instruction_record_t *)malloc_core(next_size);
+            memcpy(grown, d.records, (size_t)cap << 5);
+            d.records = grown;
+            records_heap = 1;
+        }
+        cap = next_cap;
     }
     if (x27 == 0x7ff) goto L_76;
     ri = ri + 1;
@@ -1082,8 +1098,9 @@ L_79:
     w11 = d.instruction_count;
 L_80:
     {
-        jit_instruction_record_t *nb = (jit_instruction_record_t *)realloc_core(d.records,
-                                (unsigned long)((uint64_t)(w11 & 0xffff) << 5));
+        /* The record array is temporary. Shrinking it here needlessly calls
+         * realloc for every block; retain the working buffer until cleanup. */
+        jit_instruction_record_t *nb = d.records;
         uint32_t nent = d.link_count;
         jit_link_record_t *x20p = d.links;
         jit_instruction_record_t *x22p = nb;
@@ -1335,7 +1352,8 @@ L37980: ;
         result = jit_emit_block(&d, ctx, d.pc, thumb);
     }
 
-    free_core(d.records);
+    if (records_heap)
+        free_core(d.records);
 
     return result;
 }
