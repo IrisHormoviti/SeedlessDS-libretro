@@ -1188,7 +1188,6 @@ void jit_cache_refresh_block_info(unsigned char *ctx) {
 #define CHAIN     8
 #define LIVE_MASK       0x3fffffffffffffffULL
 typedef void *(*fn_memset)(void *, int, uint64_t);
-extern void time_now_microseconds(uint64_t *dest);
 extern void *jit_arena_regions_pair0_23(unsigned char *base) __asm__("jit_arena_regions_pair0");
 extern void jit_arena_regions_pair2_23(unsigned char *ctx) __asm__("jit_arena_regions_pair2");
 extern void *jit_arena_regions_pair1_23(unsigned char *base) __asm__("jit_arena_regions_pair1");
@@ -1242,17 +1241,14 @@ int32_t jit_cache_flush(uint8_t *ctx, uint32_t arg) {
     uint8_t *other = (uint8_t *)CPU(ctx)->partner;
     uint32_t f = arg;
 
-    uint64_t t1, t2, t3;
-    time_now_microseconds(&t1);
-
-    for (uint32_t i = 0; i < ARM_BLOCK_LOOKUP; i++) {
-        CPU(ctx)->block_lookup_pc[i] = 0;
-        CPU(other)->block_lookup_pc[i] = 0;
-    }
-    for (uint32_t i = 0; i < ARM_BLOCK_LOOKUP; i++) {
-        CPU(ctx)->block_lookup_offset[i] = 0;
-        CPU(other)->block_lookup_offset[i] = 0;
-    }
+    ((fn_memset)sym_libc_memset)(CPU(ctx)->block_lookup_pc, 0,
+                                  sizeof CPU(ctx)->block_lookup_pc);
+    ((fn_memset)sym_libc_memset)(CPU(ctx)->block_lookup_offset, 0,
+                                  sizeof CPU(ctx)->block_lookup_offset);
+    ((fn_memset)sym_libc_memset)(CPU(other)->block_lookup_pc, 0,
+                                  sizeof CPU(other)->block_lookup_pc);
+    ((fn_memset)sym_libc_memset)(CPU(other)->block_lookup_offset, 0,
+                                  sizeof CPU(other)->block_lookup_offset);
 
     int short_form = 0;
     if (((f >> 24) & 0xffu) == 2) short_form = 1;
@@ -1260,7 +1256,6 @@ int32_t jit_cache_flush(uint8_t *ctx, uint32_t arg) {
 
     if (!short_form) {
 
-        time_now_microseconds(&t2);
         uint32_t pr = CPU(ctx)->is_arm9;
         ((fn_memset)sym_libc_memset)(
             CPU(ctx)->jit_arena->other_blocks, 0, sizeof CPU(ctx)->jit_arena->other_blocks);
@@ -1295,7 +1290,6 @@ int32_t jit_cache_flush(uint8_t *ctx, uint32_t arg) {
             }
         }
 
-        time_now_microseconds(&t3);
         jit_arena_regions_pair2((unsigned char *)CPU(ctx)->jit_arena);
 
         uint8_t *bl = CPU(other)->jit_block;
@@ -1363,7 +1357,6 @@ int32_t jit_cache_flush(uint8_t *ctx, uint32_t arg) {
         if (m) clear_rows(m, (uint8_t *)((bus_t *)mem)->itcm_code_bits);
     }
 
-    time_now_microseconds(&t2);
     jit_arena_regions_pair0((unsigned char *)CPU(ctx)->jit_arena);
 
     {
@@ -1382,7 +1375,6 @@ int32_t jit_cache_flush(uint8_t *ctx, uint32_t arg) {
             }
         }
     }
-    (void)t1; (void)t2; (void)t3;
     return 1;
 }
 #undef SHORT_BLOCK
