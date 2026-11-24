@@ -116,7 +116,8 @@ Use `compute` in place of `software` to measure the GLES path with the same ROM.
 The persistent JIT warm-start manifest keeps up to 256 validated guest PCs.
 Once per emulated frame it samples the ARM9 and ARM7 PCs, then prioritizes
 repeatedly sampled blocks for precompilation on the next normal JIT-enabled
-boot. Savestate restores skip this prewarm.
+boot. During savestate restore, manifest entries are revalidated and warmed
+after the saved memory has been restored; direct-ROM boot seeds are skipped.
 On a direct header boot, Seedless also seeds any ARM9 and ARM7 executable
 entry points that the manifest did not already warm. The JIT's existing
 direct-branch linking discovers reachable blocks; modified code and overlays

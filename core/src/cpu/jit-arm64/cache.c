@@ -21,6 +21,8 @@
 uint64_t jit_block_lookup_secondary[2][ARM_BLOCK_LOOKUP]
     __attribute__((visibility("hidden"), aligned(64)));
 
+static void *jit_block_lookup_cached(void *ctx, uint32_t pc);
+
 #define JIT_WARM_CACHE_MAGIC 0x574a5344u
 #define JIT_WARM_CACHE_VERSION 3u
 #define JIT_WARM_CACHE_MAX_ENTRIES 256u
@@ -184,7 +186,7 @@ static void jit_warm_cache_seed_entry(arm_t *cpu, uint32_t load_address,
         (uint64_t)entry >= (uint64_t)load_address + load_size)
         return;
 
-    if (jit_block_lookup(cpu, pc)) {
+    if (jit_block_lookup_cached(cpu, pc)) {
 #if defined(SEEDLESS_JIT_PROFILE)
         jit_warm_profile_already_compiled++;
 #endif
@@ -218,7 +220,7 @@ void jit_warm_cache_preload(unsigned char *machine, int allow)
 #endif
                 continue;
             }
-            if (jit_block_lookup(cpu, entry->pc) != NULL) {
+            if (jit_block_lookup_cached(cpu, entry->pc) != NULL) {
 #if defined(SEEDLESS_JIT_PROFILE)
                 jit_warm_profile_already_compiled++;
 #endif
@@ -314,8 +316,10 @@ void jit_warm_cache_record(void *ctx, uint32_t pc)
 
 void jit_warm_cache_sample(void *ctx, uint32_t pc)
 {
+    /* The frame-boundary PC is already executing guest code. Record it without
+     * asking jit_block_lookup() to compile a miss as a side effect. */
     if (!jit_warm_cache_enabled || !ctx || !CPU(ctx)->machine ||
-        CPU(ctx)->machine->runtime.jit_enabled == 0 || !jit_block_lookup(ctx, pc))
+        CPU(ctx)->machine->runtime.jit_enabled == 0)
         return;
 
     uint32_t cpu = CPU(ctx)->is_arm9 != 0;
@@ -1546,7 +1550,12 @@ int jit_stm_gxfifo_words(void *ctx, uint32_t address, uint32_t count,
 
 
 
-void *jit_block_lookup(void *param_1, uint32_t param_2)
+/* Return an already-compiled block without generating code on a miss. Warm
+ * cache bookkeeping needs a true lookup: compiling here would skip the normal
+ * branch-linking and AArch64 instruction-cache publication path. The analyzer
+ * still uses jit_block_lookup() below when it deliberately compiles a branch
+ * target as part of an outer compilation. */
+static void *jit_block_lookup_cached(void *param_1, uint32_t param_2)
 {
 
     unsigned char *ctx = (unsigned char *)param_1;
@@ -1606,6 +1615,29 @@ void *jit_block_lookup(void *param_1, uint32_t param_2)
                 p = cand;
             }
         }
+    }
+
+    return NULL;
+}
+
+void *jit_block_lookup(void *param_1, uint32_t param_2)
+{
+    unsigned char *ctx = (unsigned char *)param_1;
+    uint32_t key = param_2;
+
+    void *cached = jit_block_lookup_cached(ctx, key);
+    if (cached != NULL)
+        return cached;
+
+    jit_arena_t *ar = CPU(ctx)->jit_arena;
+    uint64_t base = (uint64_t)(uintptr_t)ar;
+    unsigned char *pbase = (unsigned char *)base;
+    jit_hash_entry_t *entry = NULL;
+    if (!((key >> 25) == 0 && CPU(ctx)->is_arm9 == 1)) {
+        if ((key & 0xff000000u) == 0x02000000u)
+            entry = &ar->main_ram_blocks[(key >> 2) & 0x7fffu];
+        else
+            entry = &ar->other_blocks[(key >> 2) & 0x1fffu];
     }
 
     uint64_t updated = (uint64_t)(uintptr_t)jit_block_analyze(ctx, key & 0xfffffffeu, key & 1u);

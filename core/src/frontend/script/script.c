@@ -949,8 +949,8 @@ __asm__(
 "    ubfx w1, w0, #2, #10                      \n"
 "    add x1, x28, w1, uxtw #3                  \n"
 "    ldr x2, [x1, #0x80]                       \n"
-"    cmp w2, w0                                \n"
-"    b.eq 2f                                   \n"
+"    sub w3, w2, w0                            \n"
+"    cbz w3, 2f                                \n"
 JIT_PROFILE_DISPATCH_COUNT("0")
 "    adrp x3, jit_block_lookup_secondary       \n"
 "    add x3, x3, :lo12:jit_block_lookup_secondary\n"
@@ -959,8 +959,8 @@ JIT_PROFILE_DISPATCH_COUNT("0")
 "    add x3, x3, #2, lsl #12                  \n"
 "1:  add x3, x3, w1, uxtw #3                  \n"
 "    ldr x4, [x3]                              \n"
-"    cmp w4, w0                                \n"
-"    b.ne L_jit_dispatch_lookup_or_compile_1   \n"
+"    sub w5, w4, w0                            \n"
+"    cbnz w5, L_jit_dispatch_lookup_or_compile_1\n"
 JIT_PROFILE_DISPATCH_COUNT("8")
 "    str x2, [x3]                              \n"
 "    str x4, [x1, #0x80]                       \n"
