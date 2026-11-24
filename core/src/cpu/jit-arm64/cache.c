@@ -184,7 +184,8 @@ static void jit_warm_cache_seed_entry(arm_t *cpu, uint32_t load_address,
 void jit_warm_cache_preload(unsigned char *machine, int allow)
 {
     nds_t *nds = (nds_t *)machine;
-    if (!allow || nds->runtime.jit_enabled == 0)
+    /* 1: boot preload plus direct-ROM entry seeds; 2: restored-state manifest only. */
+    if (allow == 0 || nds->runtime.jit_enabled == 0)
         return;
 
 #if defined(SEEDLESS_JIT_PROFILE)
@@ -218,7 +219,8 @@ void jit_warm_cache_preload(unsigned char *machine, int allow)
     /* Header boot exposes both executable ranges before the first scheduler
      * slice. Seed their entry blocks now; the existing JIT links reachable
      * direct branches, while overlays and modified code retain runtime JIT. */
-    if (!nds->config.boot_from_firmware && nds->cart.rom && nds->cart.rom->data &&
+    if (allow == 1 && !nds->config.boot_from_firmware &&
+        nds->cart.rom && nds->cart.rom->data &&
         nds->cart.rom->size >= CART_HEADER_SIZE) {
         const uint8_t *header = nds->cart.rom->data;
         jit_warm_cache_seed_entry(&nds->arm9, rd32(header + 40), rd32(header + 44));

@@ -256,6 +256,11 @@ void state_read_machine_blocks(uint8_t *machine, uint8_t *stream, uint32_t mode)
         arm7->jit_block = (uint8_t *)translation + 8;
     }
 
+    /* nds_start_game skips warm-cache compilation when a savestate is pending.
+     * At this point memory and CPU state are restored and the JIT cache has
+     * been flushed, so validate and precompile the saved ROM PCs now. */
+    jit_warm_cache_preload(machine, 2);
+
     arm9->debug.instruction_count = 0;
     arm7->debug.instruction_count = 0;
     gpu2d_worker_hook_noop();
