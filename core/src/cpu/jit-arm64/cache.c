@@ -8,6 +8,11 @@
 #include <string.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <errno.h>
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <unistd.h>
 #include "core_internals.h"
 #include "mem_access.h"
 #include "seedlessds/platform.h"
@@ -131,6 +136,8 @@ static uint32_t jit_warm_cache_header_crc;
 static uint8_t jit_warm_cache_enabled;
 static char jit_warm_cache_path[0x410];
 static char jit_native_cache_path[0x410];
+static int jit_native_cache_root_fd = -1;
+static char jit_native_cache_root[0x410];
 static jit_native_cache_block_t jit_native_cache_blocks[JIT_NATIVE_CACHE_MAX_BLOCKS];
 static jit_native_cache_dependency_t
     jit_native_cache_dependencies[JIT_NATIVE_CACHE_MAX_DEPENDENCIES];
@@ -174,6 +181,35 @@ void jit_warm_cache_clear(void)
     jit_warm_profile_native_blocks_restored = 0;
     jit_warm_profile_preloading = 0;
 #endif
+}
+
+void jit_native_cache_set_root(const char *path)
+{
+    if (jit_native_cache_root_fd >= 0)
+        close(jit_native_cache_root_fd);
+    jit_native_cache_root_fd = -1;
+    jit_native_cache_root[0] = 0;
+    if (!path || !*path)
+        return;
+
+    struct stat st;
+    if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode) ||
+        st.st_uid != geteuid() || (st.st_mode & 077u) != 0)
+        return;
+    int fd = open(path, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0 || fstat(fd, &st) != 0 || !S_ISDIR(st.st_mode) ||
+        st.st_uid != geteuid() || (st.st_mode & 077u) != 0) {
+        if (fd >= 0)
+            close(fd);
+        return;
+    }
+    size_t length = strlen(path);
+    if (length >= sizeof jit_native_cache_root) {
+        close(fd);
+        return;
+    }
+    memcpy(jit_native_cache_root, path, length + 1);
+    jit_native_cache_root_fd = fd;
 }
 
 static uint32_t jit_warm_cache_signature(void *ctx, uint32_t pc)
@@ -562,6 +598,12 @@ static uint64_t jit_native_mapping_signature(const nds_t *nds)
 {
     const bus_t *bus = &nds->bus;
     uint64_t hash = UINT64_C(14695981039346656037);
+    /* Generated blocks contain PC-relative branches between the JIT arena
+     * and core text. This displacement is ASLR-stable, but depends on the
+     * final ELF layout and must match before saved machine code is reused. */
+    hash = jit_native_hash_u64(hash,
+        (uint64_t)((uintptr_t)&nds->jit_arena -
+                   (uintptr_t)&jit_native_mapping_signature));
     for (uint32_t i = 0; i < BUS_REGIONS; i++) {
         const bus_region_t *region = &bus->region[i];
         hash = jit_native_hash_u64(hash, region->mask);
@@ -607,17 +649,30 @@ static uint64_t jit_native_mapping_signature(const nds_t *nds)
 
 static int jit_native_cache_try_restore(nds_t *nds)
 {
-    if (!jit_warm_cache_enabled || !jit_native_cache_path[0] ||
+    if (!jit_warm_cache_enabled || jit_native_cache_root_fd < 0 ||
+        !jit_native_cache_path[0] ||
         nds->runtime.jit_enabled == 0 || nds->bus.slot2_rom ||
         nds->bus.slot2_page_bits || nds->bus.slot2_code_bits ||
+        nds->jit_arena.itcm_variant_count != 0 ||
         !jit_native_cache_initial_mapping_signature)
         return 0;
 
     size_t (*read_file)(void *, size_t, size_t, void *) =
         (size_t (*)(void *, size_t, size_t, void *))sym_libc_fread;
     int (*close_file)(void *) = (int (*)(void *))sym_libc_fclose;
-    void *file = nds_platform_default()->files.open(
-        nds_platform_default()->user, jit_native_cache_path, "rb");
+    int fd = openat(jit_native_cache_root_fd, jit_native_cache_path,
+                    O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0)
+        return 0;
+    struct stat file_stat;
+    if (fstat(fd, &file_stat) != 0 || !S_ISREG(file_stat.st_mode) ||
+        file_stat.st_uid != geteuid() || (file_stat.st_mode & 077u) != 0) {
+        close(fd);
+        return 0;
+    }
+    void *file = ((void *(*)(int, const char *))sym_libc_fdopen)(fd, "rb");
+    if (!file)
+        close(fd);
     if (!file)
         return 0;
 
@@ -716,7 +771,7 @@ static int jit_native_cache_try_restore(nds_t *nds)
         }
     }
     if ((uintptr_t)saved->record_cursor > sizeof(*saved) ||
-        saved->itcm_variant_count > JIT_ITCM_VARIANTS) {
+        saved->itcm_variant_count != 0) {
         release(payload);
         goto done;
     }
@@ -796,11 +851,109 @@ done:
     return ok;
 }
 
+static void jit_native_cache_prune_live(nds_t *nds)
+{
+    uint32_t kept_blocks = 0;
+    uint32_t kept_dependencies = 0;
+    uint8_t *arena_base = (uint8_t *)&nds->jit_arena;
+    typedef void *(*fn_malloc)(size_t);
+    typedef void (*fn_free)(void *);
+    fn_malloc allocate = (fn_malloc)sym_libc_malloc;
+    fn_free release = (fn_free)sym_libc_free;
+    size_t dependency_bytes = (size_t)jit_native_cache_dependency_count *
+                              sizeof(jit_native_cache_dependency_t);
+    jit_native_cache_dependency_t *source_dependencies =
+        (jit_native_cache_dependency_t *)allocate(dependency_bytes);
+    if (!source_dependencies) {
+        jit_native_cache_complete = 0;
+        return;
+    }
+    memcpy(source_dependencies, jit_native_cache_dependencies, dependency_bytes);
+
+    for (uint32_t i = 0; i < jit_native_cache_block_count; i++) {
+        jit_native_cache_block_t block = jit_native_cache_blocks[i];
+        if (block.cpu > 1 || block.dependency_count == 0 ||
+            block.dependency_count > JIT_NATIVE_CACHE_MAX_BLOCK_DEPENDENCIES ||
+            block.dependency_first > jit_native_cache_dependency_count ||
+            block.dependency_count > jit_native_cache_dependency_count -
+                                     block.dependency_first) {
+            jit_native_cache_complete = 0;
+            release(source_dependencies);
+            return;
+        }
+
+        arm_t *cpu = block.cpu ? &nds->arm9 : &nds->arm7;
+        uint8_t *entry = (uint8_t *)jit_block_lookup_cached(cpu, block.pc);
+        if (!entry)
+            continue;
+        if (entry < arena_base + sizeof(uint32_t) ||
+            entry >= arena_base + sizeof(nds->jit_arena)) {
+            jit_native_cache_complete = 0;
+            release(source_dependencies);
+            return;
+        }
+
+        uint32_t header_offset = rd32(entry - sizeof(uint32_t));
+        if (header_offset > sizeof(nds->jit_arena) -
+                            sizeof(jit_block_header_t)) {
+            jit_native_cache_complete = 0;
+            release(source_dependencies);
+            return;
+        }
+        const jit_block_header_t *header =
+            (const jit_block_header_t *)(arena_base + header_offset);
+        uint16_t halfwords = header->flags & JIT_BLOCK_HEADER_HALFWORDS_MASK;
+        if (!halfwords || halfwords != block.halfwords ||
+            (header->pc & ~1u) != (block.pc & ~1u) ||
+            jit_native_guest_signature(cpu, block.pc, halfwords) !=
+                block.signature) {
+            jit_native_cache_complete = 0;
+            release(source_dependencies);
+            return;
+        }
+
+        jit_native_cache_dependency_t dependencies[
+            JIT_NATIVE_CACHE_MAX_BLOCK_DEPENDENCIES];
+        int valid = 1;
+        for (uint32_t d = 0; d < block.dependency_count; d++) {
+            const jit_native_cache_dependency_t *dependency =
+                &source_dependencies[block.dependency_first + d];
+            if (!jit_native_dependency_supported(cpu, dependency->address,
+                                                  dependency->size) ||
+                jit_native_memory_signature(cpu, dependency->address,
+                                             dependency->size) !=
+                    dependency->signature) {
+                valid = 0;
+                break;
+            }
+            dependencies[d] = *dependency;
+        }
+        if (!valid) {
+            jit_native_cache_complete = 0;
+            release(source_dependencies);
+            return;
+        }
+
+        block.dependency_first = kept_dependencies;
+        memcpy(&jit_native_cache_dependencies[kept_dependencies],
+               dependencies,
+               block.dependency_count * sizeof(dependencies[0]));
+        kept_dependencies += block.dependency_count;
+        jit_native_cache_blocks[kept_blocks++] = block;
+    }
+
+    jit_native_cache_block_count = kept_blocks;
+    jit_native_cache_dependency_count = kept_dependencies;
+    release(source_dependencies);
+}
+
 static void jit_native_cache_save(nds_t *nds)
 {
-    if (!jit_warm_cache_enabled || !jit_native_cache_path[0] ||
+    if (!jit_warm_cache_enabled || jit_native_cache_root_fd < 0 ||
+        !jit_native_cache_path[0] ||
         !jit_native_cache_complete || jit_native_cache_block_count == 0 ||
         jit_native_cache_dependency_count == 0 ||
+        nds->jit_arena.itcm_variant_count != 0 ||
         nds->bus.slot2_rom || nds->bus.slot2_page_bits || nds->bus.slot2_code_bits)
         return;
     /* Invalidation bitmaps are indexed through the live bus mapping. Persist
@@ -808,6 +961,11 @@ static void jit_native_cache_save(nds_t *nds)
     if (!jit_native_cache_initial_mapping_signature ||
         jit_native_mapping_signature(nds) !=
         jit_native_cache_initial_mapping_signature)
+        return;
+
+    jit_native_cache_prune_live(nds);
+    if (!jit_native_cache_complete || jit_native_cache_block_count == 0 ||
+        jit_native_cache_dependency_count == 0)
         return;
 
     size_t blocks_size = (size_t)jit_native_cache_block_count *
@@ -872,15 +1030,44 @@ static void jit_native_cache_save(nds_t *nds)
         jit_native_cache_crc(payload, payload_size),
         jit_native_cache_initial_mapping_signature
     };
-    void *file = nds_platform_default()->files.open(
-        nds_platform_default()->user, jit_native_cache_path, "wb");
-    if (file) {
-        size_t (*write_file)(const void *, size_t, size_t, void *) =
-            (size_t (*)(const void *, size_t, size_t, void *))sym_libc_fwrite;
-        int (*close_file)(void *) = (int (*)(void *))sym_libc_fclose;
-        if (write_file(&header, sizeof header, 1, file) == 1)
-            (void)write_file(payload, 1, payload_size, file);
-        close_file(file);
+    char temporary[sizeof jit_native_cache_path + 48];
+    uint64_t stamp = 0;
+    time_now_microseconds(&stamp);
+    int temporary_length = snprintf(temporary, sizeof temporary,
+        ".%s.tmp.%ld.%llu", jit_native_cache_path, (long)getpid(),
+        (unsigned long long)stamp);
+    if (temporary_length >= 0 &&
+        (size_t)temporary_length < sizeof temporary) {
+        int fd = openat(jit_native_cache_root_fd, temporary,
+            O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW, 0600);
+        if (fd >= 0) {
+            void *file = ((void *(*)(int, const char *))sym_libc_fdopen)(fd, "wb");
+            if (!file) {
+                close(fd);
+                unlinkat(jit_native_cache_root_fd, temporary, 0);
+            } else {
+                size_t (*write_file)(const void *, size_t, size_t, void *) =
+                    (size_t (*)(const void *, size_t, size_t, void *))sym_libc_fwrite;
+                int (*flush_file)(void *) =
+                    (int (*)(void *))sym_libc_fflush;
+                int (*close_file)(void *) =
+                    (int (*)(void *))sym_libc_fclose;
+                int (*file_descriptor)(void *) =
+                    (int (*)(void *))sym_libc_fileno;
+                int ok = write_file(&header, sizeof header, 1, file) == 1 &&
+                    write_file(payload, 1, payload_size, file) == payload_size &&
+                    flush_file(file) == 0 && fsync(file_descriptor(file)) == 0;
+                if (close_file(file) != 0)
+                    ok = 0;
+                if (ok && renameat(jit_native_cache_root_fd, temporary,
+                                   jit_native_cache_root_fd,
+                                   jit_native_cache_path) == 0) {
+                    (void)fsync(jit_native_cache_root_fd);
+                } else {
+                    unlinkat(jit_native_cache_root_fd, temporary, 0);
+                }
+            }
+        }
     }
     release(payload);
 }
@@ -911,13 +1098,21 @@ void jit_warm_cache_begin(unsigned char *machine)
         jit_warm_cache_path[0] = 0;
         return;
     }
-    path_length = snprintf(jit_native_cache_path, sizeof jit_native_cache_path,
-                           "%s.native", jit_warm_cache_path);
+    jit_native_cache_path[0] = 0;
+    path_length = -1;
+    if (jit_native_cache_root_fd >= 0) {
+        path_length = snprintf(jit_native_cache_path,
+                               sizeof jit_native_cache_path,
+                               "jit_native_%08x_%08x_%08x.bin",
+                               jit_warm_cache_game_code, jit_warm_cache_rom_size,
+                               jit_warm_cache_header_crc);
+    }
     if (path_length < 0 || (size_t)path_length >= sizeof jit_native_cache_path) {
         jit_native_cache_path[0] = 0;
     }
     jit_warm_cache_enabled = 1;
-    jit_native_cache_complete = jit_native_cache_path[0] != 0;
+    jit_native_cache_complete = jit_native_cache_root_fd >= 0 &&
+                                jit_native_cache_path[0] != 0;
 
     read_file = (size_t (*)(void *, size_t, size_t, void *))sym_libc_fread;
     close_file = (int (*)(void *))sym_libc_fclose;

@@ -185,6 +185,11 @@ if(SEEDLESS_ENABLE_IPO)
     if(NOT SEEDLESS_IPO_SUPPORTED)
         if(SEEDLESS_IPO_AUTO_DEFAULT)
             message(WARNING "IPO auto-detection failed; using the normal build: ${SEEDLESS_IPO_ERROR}")
+            # The cached option value came from automatic detection, not an
+            # explicit user request. Persist the fallback so a second
+            # configure of the same build directory remains successful.
+            set(SEEDLESS_ENABLE_IPO OFF CACHE BOOL
+                "Enable interprocedural optimization for the core" FORCE)
         else()
             message(FATAL_ERROR "IPO is unavailable: ${SEEDLESS_IPO_ERROR}")
         endif()
@@ -209,9 +214,10 @@ if(NOT APPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/link.T")
         -Wl,-Bsymbolic)
 endif()
 
-# Optimize AArch64 builds for the RG DS Plus's Cortex-A55 by default. BananaDS
-# uses -mcpu=cortex-a55 on these handhelds; keep the target overridable for
-# other boards and fall back to tuning-only if the compiler lacks that CPU.
+# Tune AArch64 builds for the RG DS Plus's Cortex-A55 by default without
+# emitting optional instructions that older AArch64 hosts may not support.
+# Device-specific builds can opt in to the Cortex-A55 ISA with
+# SEEDLESS_ARM_USE_NATIVE_CPU=ON.
 set(SEEDLESS_ARM_CPU_DEFAULT "")
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$" OR
    CMAKE_C_COMPILER_TARGET MATCHES "aarch64")
@@ -219,41 +225,46 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$" OR
 endif()
 set(SEEDLESS_ARM_CPU "${SEEDLESS_ARM_CPU_DEFAULT}" CACHE STRING
     "AArch64 CPU target (defaults to cortex-a55 on AArch64; empty disables CPU tuning)")
+option(SEEDLESS_ARM_USE_NATIVE_CPU
+    "Allow instructions specific to SEEDLESS_ARM_CPU" OFF)
 if(SEEDLESS_ARM_CPU)
+    string(MAKE_C_IDENTIFIER "${SEEDLESS_ARM_CPU}" SEEDLESS_CPU_ID)
     include(CheckCCompilerFlag)
     include(CheckCXXCompilerFlag)
-    string(MAKE_C_IDENTIFIER "${SEEDLESS_ARM_CPU}" SEEDLESS_CPU_ID)
-    set(SEEDLESS_CPU_C_CHECK "SEEDLESS_CPU_${SEEDLESS_CPU_ID}_C")
-    set(SEEDLESS_CPU_CXX_CHECK "SEEDLESS_CPU_${SEEDLESS_CPU_ID}_CXX")
-    check_c_compiler_flag("-mcpu=${SEEDLESS_ARM_CPU}" "${SEEDLESS_CPU_C_CHECK}")
-    check_cxx_compiler_flag("-mcpu=${SEEDLESS_ARM_CPU}" "${SEEDLESS_CPU_CXX_CHECK}")
-
+    if(SEEDLESS_ARM_USE_NATIVE_CPU)
+        set(SEEDLESS_CPU_FLAG "-mcpu=${SEEDLESS_ARM_CPU}")
+    else()
+        set(SEEDLESS_CPU_FLAG "-mtune=${SEEDLESS_ARM_CPU}")
+    endif()
+    if(SEEDLESS_ARM_USE_NATIVE_CPU)
+        set(SEEDLESS_CPU_MODE native)
+    else()
+        set(SEEDLESS_CPU_MODE tune)
+    endif()
+    set(SEEDLESS_CPU_C_CHECK "SEEDLESS_CPU_${SEEDLESS_CPU_ID}_${SEEDLESS_CPU_MODE}_C")
+    set(SEEDLESS_CPU_CXX_CHECK "SEEDLESS_CPU_${SEEDLESS_CPU_ID}_${SEEDLESS_CPU_MODE}_CXX")
+    check_c_compiler_flag("${SEEDLESS_CPU_FLAG}" "${SEEDLESS_CPU_C_CHECK}")
+    check_cxx_compiler_flag("${SEEDLESS_CPU_FLAG}" "${SEEDLESS_CPU_CXX_CHECK}")
     if(NOT ${SEEDLESS_CPU_C_CHECK} OR NOT ${SEEDLESS_CPU_CXX_CHECK})
         if(SEEDLESS_ARM_CPU STREQUAL "cortex-a55")
-            check_c_compiler_flag("-mcpu=cortex_a55" SEEDLESS_CPU_cortex_a55_UNDERSCORE_C)
-            check_cxx_compiler_flag("-mcpu=cortex_a55" SEEDLESS_CPU_cortex_a55_UNDERSCORE_CXX)
-            if(SEEDLESS_CPU_cortex_a55_UNDERSCORE_C AND
-               SEEDLESS_CPU_cortex_a55_UNDERSCORE_CXX)
-                set(SEEDLESS_ARM_CPU "cortex_a55")
-                set(SEEDLESS_CPU_C_CHECK SEEDLESS_CPU_cortex_a55_UNDERSCORE_C)
-                set(SEEDLESS_CPU_CXX_CHECK SEEDLESS_CPU_cortex_a55_UNDERSCORE_CXX)
+            string(REPLACE "cortex-a55" "cortex_a55" SEEDLESS_CPU_FLAG_ALT
+                   "${SEEDLESS_CPU_FLAG}")
+            check_c_compiler_flag("${SEEDLESS_CPU_FLAG_ALT}"
+                                  SEEDLESS_CPU_cortex_a55_${SEEDLESS_CPU_MODE}_ALT_C)
+            check_cxx_compiler_flag("${SEEDLESS_CPU_FLAG_ALT}"
+                                    SEEDLESS_CPU_cortex_a55_${SEEDLESS_CPU_MODE}_ALT_CXX)
+            if(SEEDLESS_CPU_cortex_a55_${SEEDLESS_CPU_MODE}_ALT_C AND
+               SEEDLESS_CPU_cortex_a55_${SEEDLESS_CPU_MODE}_ALT_CXX)
+                set(SEEDLESS_CPU_C_CHECK SEEDLESS_CPU_cortex_a55_${SEEDLESS_CPU_MODE}_ALT_C)
+                set(SEEDLESS_CPU_CXX_CHECK SEEDLESS_CPU_cortex_a55_${SEEDLESS_CPU_MODE}_ALT_CXX)
+                set(SEEDLESS_CPU_FLAG "${SEEDLESS_CPU_FLAG_ALT}")
             endif()
         endif()
     endif()
-
-    if(${SEEDLESS_CPU_C_CHECK} AND ${SEEDLESS_CPU_CXX_CHECK})
-        set(SEEDLESS_ARM_CPU_FLAG "-mcpu=${SEEDLESS_ARM_CPU}")
-    else()
-        set(SEEDLESS_CPU_TUNE_C_CHECK "SEEDLESS_CPU_${SEEDLESS_CPU_ID}_TUNE_C")
-        set(SEEDLESS_CPU_TUNE_CXX_CHECK "SEEDLESS_CPU_${SEEDLESS_CPU_ID}_TUNE_CXX")
-        check_c_compiler_flag("-mtune=${SEEDLESS_ARM_CPU}" "${SEEDLESS_CPU_TUNE_C_CHECK}")
-        check_cxx_compiler_flag("-mtune=${SEEDLESS_ARM_CPU}" "${SEEDLESS_CPU_TUNE_CXX_CHECK}")
-        if(NOT ${SEEDLESS_CPU_TUNE_C_CHECK} OR NOT ${SEEDLESS_CPU_TUNE_CXX_CHECK})
-            message(FATAL_ERROR "Unsupported AArch64 CPU target: ${SEEDLESS_ARM_CPU}")
-        endif()
-        message(WARNING "Compiler lacks -mcpu=${SEEDLESS_ARM_CPU}; using -mtune instead")
-        set(SEEDLESS_ARM_CPU_FLAG "-mtune=${SEEDLESS_ARM_CPU}")
+    if(NOT ${SEEDLESS_CPU_C_CHECK} OR NOT ${SEEDLESS_CPU_CXX_CHECK})
+        message(FATAL_ERROR "Unsupported AArch64 CPU flag: ${SEEDLESS_CPU_FLAG}")
     endif()
+    set(SEEDLESS_ARM_CPU_FLAG "${SEEDLESS_CPU_FLAG}")
 
     foreach(target IN ITEMS recon_fn seedlessds_libretro
             seedless_lua seedless_unrar seedless_lzma zlibstatic zlib)
@@ -287,7 +298,7 @@ if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64" OR
     set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
         ${SEEDLESS_JIT_ABI_SOURCES})
     set(SEEDLESS_JIT_ABI_INPUT
-        "${CMAKE_C_COMPILER_ID};${CMAKE_C_COMPILER_VERSION};${CMAKE_C_COMPILER};${CMAKE_C_COMPILER_TARGET};${CMAKE_CXX_COMPILER_ID};${CMAKE_CXX_COMPILER_VERSION};${CMAKE_CXX_COMPILER};${CMAKE_SYSTEM_PROCESSOR};${SEEDLESS_ARM_CPU};${SEEDLESS_ARM_CPU_FLAG};${SEEDLESS_IPO_ACTIVE};${SEEDLESS_ENABLE_IPO};${SEEDLESS_JIT_PROFILE};${CMAKE_BUILD_TYPE};${CMAKE_C_FLAGS};${CMAKE_C_FLAGS_DEBUG};${CMAKE_C_FLAGS_RELEASE};${CMAKE_C_FLAGS_RELWITHDEBINFO};${CMAKE_C_FLAGS_MINSIZEREL};${CMAKE_CXX_FLAGS};${CMAKE_CXX_FLAGS_DEBUG};${CMAKE_CXX_FLAGS_RELEASE};${CMAKE_CXX_FLAGS_RELWITHDEBINFO};${CMAKE_CXX_FLAGS_MINSIZEREL};${CMAKE_SHARED_LINKER_FLAGS};${CMAKE_SHARED_LINKER_FLAGS_RELEASE};${CMAKE_MODULE_LINKER_FLAGS};${CMAKE_EXE_LINKER_FLAGS}")
+        "${CMAKE_C_COMPILER_ID};${CMAKE_C_COMPILER_VERSION};${CMAKE_C_COMPILER};${CMAKE_C_COMPILER_TARGET};${CMAKE_CXX_COMPILER_ID};${CMAKE_CXX_COMPILER_VERSION};${CMAKE_CXX_COMPILER};${CMAKE_CXX_COMPILER_TARGET};${CMAKE_ASM_COMPILER_ID};${CMAKE_ASM_COMPILER_VERSION};${CMAKE_ASM_COMPILER};${CMAKE_LINKER};${CMAKE_SYSTEM_PROCESSOR};${SEEDLESS_ARM_CPU};${SEEDLESS_ARM_CPU_FLAG};${SEEDLESS_ARM_USE_NATIVE_CPU};${SEEDLESS_IPO_ACTIVE};${SEEDLESS_ENABLE_IPO};${SEEDLESS_JIT_PROFILE};${CMAKE_BUILD_TYPE};${CMAKE_C_FLAGS};${CMAKE_C_FLAGS_DEBUG};${CMAKE_C_FLAGS_RELEASE};${CMAKE_C_FLAGS_RELWITHDEBINFO};${CMAKE_C_FLAGS_MINSIZEREL};${CMAKE_CXX_FLAGS};${CMAKE_CXX_FLAGS_DEBUG};${CMAKE_CXX_FLAGS_RELEASE};${CMAKE_CXX_FLAGS_RELWITHDEBINFO};${CMAKE_CXX_FLAGS_MINSIZEREL};${CMAKE_ASM_FLAGS};${CMAKE_ASM_FLAGS_DEBUG};${CMAKE_ASM_FLAGS_RELEASE};${CMAKE_ASM_FLAGS_RELWITHDEBINFO};${CMAKE_ASM_FLAGS_MINSIZEREL};${CMAKE_SHARED_LINKER_FLAGS};${CMAKE_SHARED_LINKER_FLAGS_DEBUG};${CMAKE_SHARED_LINKER_FLAGS_RELEASE};${CMAKE_SHARED_LINKER_FLAGS_RELWITHDEBINFO};${CMAKE_SHARED_LINKER_FLAGS_MINSIZEREL};${CMAKE_MODULE_LINKER_FLAGS};${CMAKE_MODULE_LINKER_FLAGS_DEBUG};${CMAKE_MODULE_LINKER_FLAGS_RELEASE};${CMAKE_MODULE_LINKER_FLAGS_RELWITHDEBINFO};${CMAKE_MODULE_LINKER_FLAGS_MINSIZEREL};${CMAKE_EXE_LINKER_FLAGS};${CMAKE_EXE_LINKER_FLAGS_DEBUG};${CMAKE_EXE_LINKER_FLAGS_RELEASE};${CMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO};${CMAKE_EXE_LINKER_FLAGS_MINSIZEREL}")
     foreach(source IN LISTS SEEDLESS_JIT_ABI_SOURCES)
         file(SHA256 "${source}" source_hash)
         string(APPEND SEEDLESS_JIT_ABI_INPUT ";${source}:${source_hash}")

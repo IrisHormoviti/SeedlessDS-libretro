@@ -9,6 +9,7 @@
 #include <sched.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <errno.h>
 
 #include <libretro.h>
 #include "libretro_internal.h"
@@ -58,6 +59,7 @@ static int g_stylus_touching;
 /* The crosshair is a virtual-stylus aid. A real touchscreen press already
  * shows the stylus, so drawing it there only obscures the game. */
 static int g_cursor_from_stick;
+extern void jit_native_cache_set_root(const char *path);
 #define STYLUS_DEADZONE 0x1800
 #define STYLUS_SPEED_PX 4.5f
 
@@ -123,6 +125,45 @@ static void install_system_file(const char *name)
         fwrite(buf, 1, n, out);
     fclose(in);
     fclose(out);
+}
+
+static void configure_native_cache_dir(void)
+{
+    char path[4096];
+    char resolved[4096];
+    const char *home = getenv("HOME");
+    struct stat st;
+    /* Native instructions must live in the account's private home cache, not
+     * beside frontend saves, which may be on shared or removable storage. */
+    jit_native_cache_set_root(NULL);
+    if (!home || !*home)
+        return;
+    int n = snprintf(path, sizeof path, "%s/.cache", home);
+    if (n < 0 || (size_t)n >= sizeof path)
+        return;
+    if (mkdir(path, 0700) != 0 && errno != EEXIST)
+        return;
+    if (lstat(home, &st) != 0 || !S_ISDIR(st.st_mode) ||
+        st.st_uid != geteuid() || (st.st_mode & 0022u) != 0)
+        return;
+    if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode) ||
+        st.st_uid != geteuid() || (st.st_mode & 0022u) != 0)
+        return;
+    n = snprintf(path, sizeof path, "%s/.cache/seedless-native-jit", home);
+    if (n < 0 || (size_t)n >= sizeof path)
+        return;
+    if (mkdir(path, 0700) != 0 && errno != EEXIST)
+        return;
+    if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != geteuid())
+        return;
+    if ((st.st_mode & 077u) != 0 && chmod(path, 0700) != 0)
+        return;
+    if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode) ||
+        st.st_uid != geteuid() || (st.st_mode & 077u) != 0)
+        return;
+    if (!realpath(path, resolved))
+        return;
+    jit_native_cache_set_root(resolved);
 }
 
 static const char *opt_value(const char *key, const char *fallback)
@@ -290,6 +331,7 @@ static void set_seedless_root(void)
     snprintf(user_sys, sizeof user_sys, "%s/User/system", g_system_dir);
     mkdir_p(user_sys);
     mkdir_p(g_save_dir);
+    configure_native_cache_dir();
 
     install_system_file("nds_bios_arm9.bin");
     install_system_file("nds_bios_arm9_replacement.bin");
@@ -638,6 +680,7 @@ void retro_init(void)
 void retro_deinit(void)
 {
     retro_unload_game();
+    jit_native_cache_set_root(NULL);
 }
 
 unsigned retro_api_version(void) { return RETRO_API_VERSION; }

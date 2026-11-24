@@ -53,15 +53,13 @@ An x86_64 build is possible with `SEEDLESS_ALLOW_NON_AARCH64` (JIT stubs), but i
 
 ### RG DS / RG DS Plus performance
 
-New AArch64 builds default to `-mcpu=cortex-a55`, `-O2`, and link-time
-optimization when CMake detects compiler-aware C and C++ archivers and confirms
-IPO support. This matches BananaDS's CPU targeting and LTO setup for these
-handhelds. Pass `-DSEEDLESS_ARM_CPU=` or `-DSEEDLESS_ENABLE_IPO=OFF` to disable
-the corresponding target optimization; pass `-DSEEDLESS_ENABLE_IPO=ON` to
-require LTO. If a compiler accepts only tuning, SeedlessDS falls back to
-`-mtune=cortex-a55`; incomplete cross-toolchain wrappers stay on the regular
-build path when LTO is selected automatically. Toolchains need an LTO-capable
-linker and archive tools, such as `gcc-ar` and `gcc-ranlib` with GCC.
+New AArch64 builds default to `-mtune=cortex-a55` and `-O2`, while keeping
+generated instructions compatible with generic AArch64 hosts. Device builds
+guaranteed to run on Cortex-A55 can opt into CPU-specific instruction selection
+with `-DSEEDLESS_ARM_USE_NATIVE_CPU=ON`. IPO is enabled automatically when the
+toolchain supports it; an unavailable auto-detected IPO mode falls back cleanly,
+while `-DSEEDLESS_ENABLE_IPO=ON` makes IPO required. Pass
+`-DSEEDLESS_ARM_CPU=` or `-DSEEDLESS_ENABLE_IPO=OFF` to disable those settings.
 
 The libretro frontend converts each DS screen directly into its half of the
 stacked output frame. This removes a 384 KiB copy per delivered frame, following
@@ -124,16 +122,21 @@ direct-branch linking discovers reachable blocks; modified code and overlays
 still use normal runtime compilation and invalidation.
 
 In addition to the warm-start manifest, the AArch64 JIT now writes a persistent
-native snapshot beside it as a `.native` file. It contains generated code and
-lookup/invalidation state from blocks observed in prior play sessions. On a
+native snapshot in the current user's private `~/.cache/seedless-native-jit`
+directory. It
+contains generated code and lookup/invalidation state from blocks observed in
+prior play sessions. On a
 normal ROM boot, Seedless restores it only when the compiler/emitter ABI, bus
 mapping, ROM identity, and full guest-instruction signatures all match; any
 failure leaves the standard JIT path active. It also validates guest data
 ranges folded into native code, includes directly compiled branch targets, and
-rebuilds page write watches on restore. Savestate loads continue to use
-their own memory-aware warm path. The core does not scan or compile the whole
-ROM before first play, so cold launch remains lazy. With `SEEDLESS_JIT_PROFILE`
-enabled, ROM replay reports how many native blocks were restored.
+rebuilds page write watches on restore. Saves use a temporary file and atomic
+replacement so an interrupted write keeps the previous snapshot. Native cache
+restore is disabled when a private home cache directory is unavailable.
+Savestate loads continue to use their own memory-aware warm path.
+The core does not scan or compile the whole ROM before first play, so cold
+launch remains lazy. With `SEEDLESS_JIT_PROFILE` enabled, ROM replay reports
+how many native blocks were restored.
 
 BananaLinux builds BananaDS at `e54aaa8e2693352ad9f33a0d3d75ea4b887f1957`
 with a patched melonDS core. Build that source as a separate baseline so its JIT,

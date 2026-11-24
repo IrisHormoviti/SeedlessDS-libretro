@@ -157,6 +157,7 @@ void jit_warm_cache_preload(unsigned char *machine, int allow);
 void jit_warm_cache_record(void *ctx, uint32_t pc);
 void jit_warm_cache_sample(void *ctx, uint32_t pc);
 void jit_warm_cache_save(void);
+void jit_native_cache_set_root(const char *path);
 void jit_native_cache_compile_begin(void *ctx, uint32_t pc);
 void jit_native_cache_compile_end(void *ctx, uint32_t pc, uint8_t *entry);
 void jit_native_cache_note_range(void *ctx, uint32_t address, uint32_t size);

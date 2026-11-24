@@ -94,6 +94,7 @@ void jit_warm_cache_record(void *ctx, uint32_t pc)
     (void)pc;
 }
 void jit_warm_cache_save(void) {}
+void jit_native_cache_set_root(const char *path) { (void)path; }
 void jit_native_cache_compile_begin(void *ctx, uint32_t pc)
 {
     (void)ctx;
