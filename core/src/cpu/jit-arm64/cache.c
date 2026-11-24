@@ -625,6 +625,18 @@ static uint64_t jit_native_mapping_signature(const nds_t *nds)
     for (uint32_t i = 0; i < BUS_REGIONS; i++) {
         const bus_region_t *region = &bus->region[i];
         hash = jit_native_hash_u64(hash, region->mask);
+        /* Palette and OAM mappings start as lazy handlers and become direct
+         * VRAM mappings during display setup. Generated memory operations use
+         * the live bus helpers, so those dispatch details are not embedded in
+         * native blocks; hashing them would reject every normal game cache. */
+        if (i == 10 || i == 11 || i == 14 || i == 15) {
+            if (!jit_native_hash_region_pointer(nds, &hash,
+                    (uintptr_t)region->page_bits, 0) ||
+                !jit_native_hash_region_pointer(nds, &hash,
+                    (uintptr_t)region->code_bits, 0))
+                return 0;
+            continue;
+        }
         hash = jit_native_hash_u64(hash, region->read_kind);
         hash = jit_native_hash_u64(hash, region->write_kind);
         if (!jit_native_hash_region_pointer(nds, &hash,
