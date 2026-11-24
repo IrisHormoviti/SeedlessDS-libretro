@@ -905,6 +905,9 @@ uint32_t script_lua_set_ds_memory_arm7_32(void *L)
 _Static_assert(offsetof(nds_t, arm9) == JIT_DISPATCH_ARM9_OFFSET, "arm9 offset");
 _Static_assert(offsetof(nds_t, arm7) == JIT_DISPATCH_ARM7_OFFSET, "arm7 offset");
 _Static_assert(offsetof(arm_t, block_lookup) == 0x80, "JIT target cache offset");
+_Static_assert(offsetof(arm_t, is_arm9) == 0x210c, "JIT CPU selector offset");
+extern uint64_t jit_block_lookup_secondary[2][ARM_BLOCK_LOOKUP]
+    __attribute__((visibility("hidden")));
 #if defined(__aarch64__) || defined(__arm64__)
 __asm__(
 "    .text\n"
@@ -931,7 +934,20 @@ __asm__(
 "    add x1, x28, w1, uxtw #3                  \n"
 "    ldr x2, [x1, #0x80]                       \n"
 "    cmp w2, w0                                \n"
+"    b.eq 2f                                   \n"
+"    adrp x3, jit_block_lookup_secondary       \n"
+"    add x3, x3, :lo12:jit_block_lookup_secondary\n"
+"    ldr w4, [x28, #0x210c]                    \n"
+"    cbz w4, 1f                                \n"
+"    add x3, x3, #2, lsl #12                  \n"
+"1:  add x3, x3, w1, uxtw #3                  \n"
+"    ldr x4, [x3]                              \n"
+"    cmp w4, w0                                \n"
 "    b.ne L_jit_dispatch_lookup_or_compile_1   \n"
+"    str x2, [x3]                              \n"
+"    str x4, [x1, #0x80]                       \n"
+"    mov x2, x4                                \n"
+"2:                                            \n"
 "    lsr x1, x2, #32                           \n"
 "    add x1, x11, w1, uxtw                     \n"
 "    br x1                                     \n"

@@ -10,6 +10,20 @@
 #include "core_internals.h"
 #include "mem_access.h"
 
+/* The primary way lives in arm_t for a single-load hot path. Keep the second
+ * way outside arm_t because generated code and save-state layouts depend on
+ * the structure offsets. One row per emulated CPU. */
+uint64_t jit_block_lookup_secondary[2][ARM_BLOCK_LOOKUP]
+    __attribute__((visibility("hidden"), aligned(64)));
+
+void jit_block_lookup_invalidate(void *ctx, uint32_t dir)
+{
+    arm_t *cpu = CPU(ctx);
+    uint32_t slot = (dir >> 2) & (ARM_BLOCK_LOOKUP - 1u);
+    cpu->block_lookup[slot] = 0;
+    jit_block_lookup_secondary[cpu->is_arm9 != 0][slot] = 0;
+}
+
 
 
 
@@ -93,7 +107,7 @@ uint32_t jit_watch_write_notify(unsigned char *machine, uint32_t dir)
         if (found) {
 
             arena->itcm_arm_blocks[idx] = (uint32_t)(ent->block - (uint8_t *)arena);
-            CPU(machine)->block_lookup[(dir >> 2) & 0x3ffu] = 0;
+            jit_block_lookup_invalidate(machine, dir);
             return 0;
         }
 
@@ -106,7 +120,7 @@ uint32_t jit_watch_write_notify(unsigned char *machine, uint32_t dir)
             e->word = key;
             e->pc = dir;
             arena->itcm_arm_blocks[idx] = 0;
-            CPU(machine)->block_lookup[(dir >> 2) & 0x3ffu] = 0;
+            jit_block_lookup_invalidate(machine, dir);
 
             block = compile(machine, dir);
 
@@ -941,6 +955,9 @@ void *jit_cache_lookup_or_compile(void *ctx, uint32_t dir)
     uint32_t off = 0;
 
 #define LOOKUP_RETURN(p, o) do {                                    \
+        uint64_t old_target_ = CPU(c)->block_lookup[i13];            \
+        if ((uint32_t)old_target_ != dir)                            \
+            jit_block_lookup_secondary[CPU(c)->is_arm9 != 0][i13] = old_target_; \
         CPU(c)->block_lookup[i13] = ((uint64_t)(o) << 32) | dir; \
         return (void *)(p);                               \
     } while (0)
@@ -1271,6 +1288,8 @@ int32_t jit_cache_flush(uint8_t *ctx, uint32_t arg) {
                                   sizeof CPU(ctx)->block_lookup);
     ((fn_memset)sym_libc_memset)(CPU(other)->block_lookup, 0,
                                   sizeof CPU(other)->block_lookup);
+    ((fn_memset)sym_libc_memset)(jit_block_lookup_secondary, 0,
+                                  sizeof jit_block_lookup_secondary);
 
     int short_form = 0;
     if (((f >> 24) & 0xffu) == 2) short_form = 1;
