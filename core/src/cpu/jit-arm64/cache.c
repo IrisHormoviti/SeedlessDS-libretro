@@ -18,8 +18,10 @@
 /* The primary way lives in arm_t for a single-load hot path. Keep the second
  * way outside arm_t because generated code and save-state layouts depend on
  * the structure offsets. One row per emulated CPU. */
+/* Generated dispatch code names this array only through inline assembly, so
+ * LTO cannot see the reference; keep the definition even when it looks unused. */
 uint64_t jit_block_lookup_secondary[2][ARM_BLOCK_LOOKUP]
-    __attribute__((visibility("hidden"), aligned(64)));
+    __attribute__((visibility("hidden"), aligned(64), used));
 
 static void *jit_block_lookup_cached(void *ctx, uint32_t pc);
 
@@ -101,8 +103,7 @@ static uint32_t jit_warm_cache_entries_crc(const jit_warm_cache_entry_t *entries
 
 void jit_warm_cache_begin(unsigned char *machine)
 {
-    arm_t *cpu = CPU(machine);
-    nds_t *nds = cpu->machine;
+    nds_t *nds = (nds_t *)machine;
     rom_image_t *rom = nds->cart.rom;
     jit_warm_cache_header_t header;
     size_t (*read_file)(void *, size_t, size_t, void *);
@@ -1264,7 +1265,7 @@ static uint64_t jit_profile_ldm_batch_hits;
 static uint64_t jit_profile_gxfifo_stm_calls;
 static uint64_t jit_profile_gxfifo_stm_hits;
 uint64_t jit_dispatch_profile_counters[2][8]
-    __attribute__((visibility("hidden"), aligned(64)));
+    __attribute__((visibility("hidden"), aligned(64), used));
 
 void jit_dispatch_profile_read(uint64_t *primary_misses, uint64_t *secondary_hits)
 {

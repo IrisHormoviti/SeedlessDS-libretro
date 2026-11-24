@@ -1000,6 +1000,13 @@ bool retro_load_game(const struct retro_game_info *info)
     if (log_cb)
         log_cb(RETRO_LOG_INFO, CORE_NAME ": loaded %s (%s)\n", g_rom_path,
                nds_version_string());
+
+    /* Frontends read RETRO_MEMORY_SAVE_RAM as soon as load returns, but the
+     * cart mounts its backup buffer on the worker thread. Wait for it briefly
+     * so the pointer and size are valid. */
+    for (int ms = 0; ms < 2000 && g_emu_running && !nds_save_ram(g_nds); ms++)
+        usleep(1000);
+
     return g_emu_running != 0;
 }
 
@@ -1043,6 +1050,8 @@ void *retro_get_memory_data(unsigned id)
         return NULL;
     if (id == RETRO_MEMORY_SYSTEM_RAM)
         return nds_main_ram(g_nds);
+    if (id == RETRO_MEMORY_SAVE_RAM)
+        return nds_save_ram(g_nds);
     return NULL;
 }
 
@@ -1050,5 +1059,7 @@ size_t retro_get_memory_size(unsigned id)
 {
     if (id == RETRO_MEMORY_SYSTEM_RAM)
         return 4u * 1024u * 1024u;
+    if (id == RETRO_MEMORY_SAVE_RAM)
+        return nds_save_ram_size(g_nds);
     return 0;
 }
