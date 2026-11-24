@@ -957,9 +957,9 @@ JIT_PROFILE_DISPATCH_COUNT("0")
 "    adrp x3, jit_block_lookup_secondary       \n"
 "    add x3, x3, :lo12:jit_block_lookup_secondary\n"
 "    ldr w5, [x28, #0x210c]                    \n"
-"    cbz w5, 1f                                \n"
-"    add x3, x3, #4, lsl #12                  \n"
-"1:  add x3, x3, w4, uxtw #4                  \n"
+/* Each CPU row is 0x4000 bytes; select it without a data-dependent branch. */
+"    add x3, x3, x5, lsl #14                  \n"
+"    add x3, x3, w4, uxtw #4                  \n"
 "    ldr x4, [x3]                              \n"
 "    sub w5, w4, w0                            \n"
 "    cbz w5, 3f                                \n"
