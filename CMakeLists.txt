@@ -214,19 +214,21 @@ if(NOT APPLE AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/link.T")
         -Wl,-Bsymbolic)
 endif()
 
-# Tune AArch64 builds for the RG DS Plus's Cortex-A55 by default without
-# emitting optional instructions that older AArch64 hosts may not support.
-# Device-specific builds can opt in to the Cortex-A55 ISA with
-# SEEDLESS_ARM_USE_NATIVE_CPU=ON.
+# Target AArch64 builds at the RG DS Plus's Cortex-A55 by default. The native
+# CPU option lets GCC use the A55 instruction set as well as its scheduler
+# tuning; builders targeting a different ARM64 CPU can override the target.
 set(SEEDLESS_ARM_CPU_DEFAULT "")
+set(SEEDLESS_ARM_USE_NATIVE_CPU_DEFAULT OFF)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$" OR
    CMAKE_C_COMPILER_TARGET MATCHES "aarch64")
     set(SEEDLESS_ARM_CPU_DEFAULT "cortex-a55")
+    set(SEEDLESS_ARM_USE_NATIVE_CPU_DEFAULT ON)
 endif()
 set(SEEDLESS_ARM_CPU "${SEEDLESS_ARM_CPU_DEFAULT}" CACHE STRING
     "AArch64 CPU target (defaults to cortex-a55 on AArch64; empty disables CPU tuning)")
 option(SEEDLESS_ARM_USE_NATIVE_CPU
-    "Allow instructions specific to SEEDLESS_ARM_CPU" OFF)
+    "Allow instructions specific to SEEDLESS_ARM_CPU"
+    ${SEEDLESS_ARM_USE_NATIVE_CPU_DEFAULT})
 if(SEEDLESS_ARM_CPU)
     string(MAKE_C_IDENTIFIER "${SEEDLESS_ARM_CPU}" SEEDLESS_CPU_ID)
     include(CheckCCompilerFlag)
