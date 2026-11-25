@@ -107,6 +107,19 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "1x"
    },
    {
+      "seedlessds_refresh_rate",
+      "Refresh Rate (Hz)",
+      NULL,
+      "Target emulation refresh rate. 0 uses the core default (60 Hz). A host can set this to its panel's exact refresh so the emulated cadence tracks the display instead of drifting against vblank.",
+      NULL,
+      "video",
+      {
+         { "0", "Auto (60 Hz)" },
+         { NULL, NULL },
+      },
+      "0"
+   },
+   {
       "seedlessds_hires_3d",
       "High-Resolution 3D",
       NULL,

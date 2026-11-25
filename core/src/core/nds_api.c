@@ -119,6 +119,22 @@ void nds_apply_config(nds_t *nds, uint64_t bits)
                                                         & CONFIG_VOLUME_MASK));
 }
 
+void nds_set_pacer_rate(nds_t *nds, double hz)
+{
+    uint32_t step;
+
+    (void)nds;
+
+    if (hz <= 1.0)
+        return;
+
+    /* The pacer's base frame period is three ticks per microsecond (50000
+     * ticks = 60 Hz). Rescale it to the host panel's refresh so the emulated
+     * cadence follows the display instead of drifting against its vblank. */
+    step = (uint32_t)(3000000.0 / hz + 0.5);
+    pacer_set_base_step(step);
+}
+
 void nds_set_firmware_user(nds_t *nds, const uint16_t *nickname, size_t units,
                            uint32_t packed)
 {

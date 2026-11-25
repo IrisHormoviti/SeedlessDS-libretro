@@ -82,6 +82,7 @@ void audio_out_restart_playback(void);
 void nds_subsystem_shutdown_release_objects(void);
 void pacer_init(unsigned char *ctx);
 void pacer_run(uint8_t *ctx);
+void pacer_set_base_step(uint32_t step);
 void sched_advance(unsigned char *machine);
 void sched_deadline_insert(sched_t *base, uint32_t deadline, uint32_t idx);
 void sched_deadline_set(sched_t *base, uint32_t idx, void (*callback)(void *machine, void *argument), void *argument);

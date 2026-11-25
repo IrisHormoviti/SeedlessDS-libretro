@@ -90,6 +90,7 @@ int nds_snapshot_slot(nds_t *nds, int slot, void *top16, void *bottom16);
 int nds_snapshot_file(nds_t *nds, const char *path, void *top16, void *bottom16);
 nds_frame_size_t nds_frame_size(nds_t *nds);
 void nds_set_internal_resolution(nds_t *nds, unsigned scale);
+void nds_set_pacer_rate(nds_t *nds, double hz);
 void nds_set_present_mode(nds_t *nds, uint32_t bits);
 void nds_set_compose_threads(nds_t *nds, unsigned threads);
 void nds_set_frameskip(nds_t *nds, unsigned frames);

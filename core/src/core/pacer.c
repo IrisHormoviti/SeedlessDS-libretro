@@ -32,6 +32,16 @@ void pacer_init(unsigned char *ctx)
 #define DEFAULT_STEP  50000
 #define LATE_THRESHOLD  (-50001)
 
+/* Base (non-fast-forward) frame period in pacer ticks, three ticks per
+ * microsecond. The host overrides it to follow its panel's refresh. */
+static uint32_t g_base_step = DEFAULT_STEP;
+
+void pacer_set_base_step(uint32_t step)
+{
+    if (step != 0)
+        g_base_step = step;
+}
+
 
 
 extern void time_now_microseconds(uint64_t *dest);
@@ -58,7 +68,7 @@ void pacer_run(uint8_t *ctx) {
     time_now_microseconds(&clock);
     uint64_t ref = clock * 3u - g->pacer_base;
 
-    if (step == 0) step = DEFAULT_STEP;
+    if (step == 0) step = g_base_step;
     uint64_t acc = g->pacer_accumulated + step;
     g->pacer_accumulated = acc;
 

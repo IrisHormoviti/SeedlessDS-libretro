@@ -837,6 +837,15 @@ void retro_get_system_av_info(struct retro_system_av_info *info)
     info->geometry.aspect_ratio =
         (float)SEEDLESS_SCREEN_W / (float)SEEDLESS_FB_H;
     info->timing.fps = 59.8261;
+    /* Report the rate the pacer will actually run at, so a frontend that
+     * paces its presentation loop to our timing.fps matches the host panel
+     * instead of drifting against it. */
+    {
+        const char *rate = opt_value("seedlessds_refresh_rate", "0");
+        double hz = strtod(rate, NULL);
+        if (hz > 1.0)
+            info->timing.fps = hz;
+    }
     info->timing.sample_rate = (double)SEEDLESS_AUDIO_RATE;
 }
 
@@ -1034,6 +1043,25 @@ static void apply_clam_firmware_user(void)
     const char *color = getenv("CLAM_NDS_FAVORITE_COLOR");
     const char *month = getenv("CLAM_NDS_BIRTHDAY_MONTH");
     const char *day = getenv("CLAM_NDS_BIRTHDAY_DAY");
+    const char *region = getenv("CLAM_NDS_REGION");
+
+    /* The DS firmware has no separate region field: the region picks the
+     * system language stored in the user settings, which is what the
+     * firmware's settings menu reads back. */
+    static const uint32_t region_language[6] = {
+        0, /* Japan: Japanese */
+        1, /* USA: English */
+        1, /* Europe: English */
+        1, /* Australia: English */
+        6, /* China: Chinese */
+        7, /* Korea: Korean */
+    };
+
+    if (region != NULL) {
+        long value = strtol(region, NULL, 10);
+        if (value >= 0 && value < 6)
+            g->config[0] = region_language[value];
+    }
 
     if (name != NULL) {
         const unsigned char *p = (const unsigned char *)name;
@@ -1158,6 +1186,12 @@ bool retro_load_game(const struct retro_game_info *info)
     recon_present_set_mode(RECON_PRESENT_PREDICATE | RECON_PRESENT_NO_UPLOAD);
     seedless_audio_reset();
     nds_apply_config(g_nds, g_config_bits);
+    {
+        const char *rate = opt_value("seedlessds_refresh_rate", "0");
+        double hz = strtod(rate, NULL);
+        if (hz > 1.0)
+            nds_set_pacer_rate(g_nds, hz);
+    }
     apply_clam_firmware_user();
     g_stylus_x = (float)(SEEDLESS_SCREEN_W / 2);
     g_stylus_y = (float)(SEEDLESS_SCREEN_H / 2);
