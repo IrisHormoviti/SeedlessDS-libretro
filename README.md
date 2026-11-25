@@ -53,13 +53,15 @@ An x86_64 build is possible with `SEEDLESS_ALLOW_NON_AARCH64` (JIT stubs), but i
 
 ### RG DS / RG DS Plus performance
 
-New AArch64 builds default to `-mtune=cortex-a55` and `-O2`, while keeping
-generated instructions compatible with generic AArch64 hosts. Device builds
-guaranteed to run on Cortex-A55 can opt into CPU-specific instruction selection
-with `-DSEEDLESS_ARM_USE_NATIVE_CPU=ON`. IPO is enabled automatically when the
-toolchain supports it; an unavailable auto-detected IPO mode falls back cleanly,
-while `-DSEEDLESS_ENABLE_IPO=ON` makes IPO required. Pass
-`-DSEEDLESS_ARM_CPU=` or `-DSEEDLESS_ENABLE_IPO=OFF` to disable those settings.
+New AArch64 builds default to Cortex-A55 CPU targeting, including A55-specific
+instruction selection, and use the selected CMake build type's optimization
+level (`-O3` for Release). This targets the RG DS Plus; builds intended for
+other AArch64 CPUs should set `-DSEEDLESS_ARM_CPU=` or choose a matching CPU.
+Set `-DSEEDLESS_ARM_USE_NATIVE_CPU=OFF` to keep A55 scheduling while avoiding
+A55-specific instructions. IPO is enabled automatically when the toolchain
+supports it; an unavailable auto-detected IPO mode falls back cleanly, while
+`-DSEEDLESS_ENABLE_IPO=ON` makes IPO required. Pass
+`-DSEEDLESS_ENABLE_IPO=OFF` to disable IPO.
 
 The libretro frontend converts each DS screen directly into its half of the
 stacked output frame. This removes a 384 KiB copy per delivered frame, following

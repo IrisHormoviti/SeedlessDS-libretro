@@ -953,8 +953,11 @@ __asm__(
 "    ubfx w4, w4, #2, #10                      \n"
 "    add x1, x28, w4, uxtw #3                  \n"
 "    ldr x2, [x1, #0x80]                       \n"
+    /* Zero is a valid guest PC, so an empty packed entry must not match it. */
+    "    cbz x2, 1f                                \n"
 "    sub w3, w2, w0                            \n"
 "    cbz w3, 2f                                \n"
+    "1:                                            \n"
 JIT_PROFILE_DISPATCH_COUNT("0")
 "    adrp x3, jit_block_lookup_secondary       \n"
 "    add x3, x3, :lo12:jit_block_lookup_secondary\n"
@@ -963,9 +966,12 @@ JIT_PROFILE_DISPATCH_COUNT("0")
 "    add x3, x3, x5, lsl #14                  \n"
 "    add x3, x3, w4, uxtw #4                  \n"
 "    ldr x4, [x3]                              \n"
+    "    cbz x4, 4f                                \n"
 "    sub w5, w4, w0                            \n"
 "    cbz w5, 3f                                \n"
+    "4:                                            \n"
 "    ldr x5, [x3, #8]                          \n"
+    "    cbz x5, L_jit_dispatch_lookup_or_compile_1\n"
 "    sub w7, w5, w0                            \n"
 "    cbnz w7, L_jit_dispatch_lookup_or_compile_1\n"
 /* Promote way 1; retain both the old primary and way 0 in the victim set. */

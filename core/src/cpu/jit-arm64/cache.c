@@ -456,7 +456,7 @@ static void jit_native_cache_record(void *ctx, uint32_t pc, uint8_t *entry,
         jit_native_cache_block_count++;
     jit_native_cache_blocks[i] = (jit_native_cache_block_t){
         pc, first_dependency, halfwords, cpu,
-        (uint8_t)frame->dependency_count,
+        (uint16_t)frame->dependency_count,
         jit_native_guest_signature(ctx, pc, halfwords)
     };
 }
