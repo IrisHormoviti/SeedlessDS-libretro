@@ -81,7 +81,7 @@ target_include_directories(recon_fn PRIVATE
     ${ZLIB_INCLUDE_DIRS})
 target_compile_definitions(recon_fn PRIVATE _GNU_SOURCE SEEDLESS_LIBRETRO=1)
 target_compile_options(recon_fn PRIVATE
-    -O2 -fno-strict-aliasing -fPIC
+    -fno-strict-aliasing -fPIC
     -Wno-unused-parameter -Wno-unused-function -Wno-unused-variable)
 
 include("${SEEDLESS_CORE_DIR}/src/CMakeLists.txt")
@@ -143,7 +143,6 @@ if(SEEDLESS_COMPUTE_PROFILE)
 endif()
 
 target_compile_options(seedlessds_libretro PRIVATE
-    -O2
     -fno-strict-aliasing
     -Wall
     -Wno-unused-parameter
