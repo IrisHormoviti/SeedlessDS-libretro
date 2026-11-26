@@ -1,5 +1,8 @@
 #include <stdint.h>
 #include "hires_runtime.h"
+#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(__AARCH64EB__)
+#include <arm_neon.h>
+#endif
 #include "blob_symbols.h"
 #include "core/nds_state.h"
 #include <string.h>
@@ -2037,6 +2040,27 @@ static uint32_t flip(uint32_t d) {
     return r;
 }
 
+#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(__AARCH64EB__)
+static inline void bg_text_unpack_4bpp_palette_row(uint8_t *out,
+                                                    const uint8_t *palette,
+                                                    uint32_t packed)
+{
+    uint8x8_t bytes = vcreate_u8(packed);
+    uint8x8_t lo = vand_u8(bytes, vdup_n_u8(0x0f));
+    uint8x8_t hi = vshr_n_u8(bytes, 4);
+    uint8x8x2_t nibbles = vzip_u8(lo, hi);
+    uint8x8_t indices = vget_low_u8(vcombine_u8(nibbles.val[0], nibbles.val[1]));
+    uint8x8_t byte_offsets = vshl_n_u8(indices, 1);
+    uint8x8x2_t color_offsets = vzip_u8(byte_offsets,
+                                        vadd_u8(byte_offsets, vdup_n_u8(1)));
+    uint8x16_t lookup = vcombine_u8(color_offsets.val[0], color_offsets.val[1]);
+    uint8x16x2_t colors;
+    colors.val[0] = vld1q_u8(palette);
+    colors.val[1] = vld1q_u8(palette + 16);
+    vst1q_u8(out, vqtbl2q_u8(colors, lookup));
+}
+#endif
+
 
 void gpu2d_bg_text_decode_4bpp_line(uint8_t *out_color, uint8_t *out_idx,
                         const uint8_t *palettes, const uint8_t *tiledata,
@@ -2057,11 +2081,16 @@ void gpu2d_bg_text_decode_4bpp_line(uint8_t *out_color, uint8_t *out_idx,
 
         for (int t = 0; t < 4; t++) {
             const uint8_t *pal = palettes + (((attr >> (8 * t + 4)) & 0xfu) << 5);
+#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(__AARCH64EB__)
+            bg_text_unpack_4bpp_palette_row(out_color, pal, data[t]);
+            out_color += 16;
+#else
             for (int p = 0; p < 8; p++) {
                 unsigned idx = (data[t] >> (4 * p)) & 0xfu;
                 memcpy(out_color, pal + idx * 2, 2);
                 out_color += 2;
             }
+#endif
         }
     }
 
@@ -2076,11 +2105,15 @@ void gpu2d_bg_text_decode_4bpp_line(uint8_t *out_color, uint8_t *out_idx,
         memcpy(out_idx + 4, &w1, 4);
 
         const uint8_t *pal = palettes + (((attr >> 4) & 0xfu) << 5);
+#if defined(__aarch64__) && defined(__ARM_NEON) && !defined(__AARCH64EB__)
+        bg_text_unpack_4bpp_palette_row(out_color, pal, w0);
+#else
         for (int p = 0; p < 8; p++) {
             unsigned idx = (w0 >> (4 * p)) & 0xfu;
             memcpy(out_color, pal + idx * 2, 2);
             out_color += 2;
         }
+#endif
     }
 }
 #undef TILES
