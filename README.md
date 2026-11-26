@@ -100,8 +100,13 @@ build-device/libretro/compute/seedless_rom_replay \
 Configure the build with -DSEEDLESS_JIT_PROFILE=ON to also report cold-start
 block analysis count and time, plus blocks analyzed during warmup. The option
 adds timing only around JIT compilation misses and is off in normal builds.
-It also reports primary target-cache misses and secondary-way hits during the
-measured interval, showing what share of misses the second way rescues.
+It also reports primary target-cache misses and hits in both secondary ways
+during the measured interval, showing what share of misses they rescue.
+For Linux perf sampling, set `SEEDLESS_JIT_PROFILE_MAP=1` to print each newly
+compiled JIT block's native address, size, CPU, and guest PC to stderr. This
+lets samples from the anonymous JIT arena be attributed to guest code; use it
+only for a dedicated profile run because it adds one log line per compiled
+block.
 For the compute renderer, configure with -DSEEDLESS_COMPUTE_PROFILE=ON to report
 average CPU time per draw for uploads, dispatch submission, buffer-map wait, and
 copy/unmap after the warmup interval. When the driver exposes
@@ -113,7 +118,8 @@ not a GPU timer.
 The first video callback includes the replay tool's scheduler wait. Throughput
 is measured after the 120-frame warmup and excludes frontend pacing and KMS.
 Use `compute` in place of `software` to measure the GLES path with the same ROM.
-The persistent JIT warm-start manifest keeps up to 256 validated guest PCs.
+The persistent JIT warm-start manifest keeps up to 8,192 validated guest PCs,
+then precompiles at most the 2,048 highest-ranked entries at startup.
 Once per emulated frame it samples the ARM9 and ARM7 PCs, then prioritizes
 repeatedly sampled blocks for precompilation on the next normal JIT-enabled
 boot. During savestate restore, manifest entries are revalidated and warmed

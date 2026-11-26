@@ -1,4 +1,5 @@
 #include <stdint.h>
+#include <stdlib.h>
 #include "jit_hooks.h"
 #include "hires_runtime.h"
 #include "blob_symbols.h"
@@ -60,6 +61,57 @@ static uint64_t jit_native_hash_u64(uint64_t hash, uint64_t value);
  * The 64 compile frames reserve about 2 MiB for these temporary ranges. */
 #define JIT_NATIVE_CACHE_MAX_BLOCK_DEPENDENCIES 4096u
 #define JIT_NATIVE_CACHE_COMPILE_DEPTH 64u
+
+#if defined(SEEDLESS_JIT_PROFILE)
+/* Optional Linux perf-map records let sampled addresses in the anonymous JIT
+ * arena resolve to guest PCs. Keep the branch out of normal builds and make
+ * the log opt-in so ordinary profiling runs remain unchanged. */
+static int jit_profile_map_state;
+
+static int jit_profile_map_enabled(void)
+{
+    int state = __atomic_load_n(&jit_profile_map_state, __ATOMIC_ACQUIRE);
+    if (state == 0) {
+        const char *value = getenv("SEEDLESS_JIT_PROFILE_MAP");
+        int desired = (value && value[0] && strcmp(value, "0") != 0) ? 2 : 1;
+        int expected = 0;
+        if (__atomic_compare_exchange_n(&jit_profile_map_state, &expected,
+                                        desired, 0, __ATOMIC_RELEASE,
+                                        __ATOMIC_ACQUIRE))
+            state = desired;
+        else
+            state = expected;
+    }
+    return state == 2;
+}
+
+static void jit_profile_map_block(void *ctx, jit_arena_t *arena,
+                                  const uint8_t *entry)
+{
+    if (!jit_profile_map_enabled() || !entry)
+        return;
+
+    uintptr_t base = (uintptr_t)arena;
+    uintptr_t address = (uintptr_t)entry;
+    if (address < base + sizeof(uint32_t) ||
+        address >= base + sizeof(*arena))
+        return;
+    uint32_t header_offset = rd32(entry - sizeof(uint32_t));
+    if (header_offset > sizeof(*arena) - sizeof(jit_block_header_t))
+        return;
+    const jit_block_header_t *header =
+        (const jit_block_header_t *)(base + header_offset);
+    if (header->code_offset > sizeof(*arena) ||
+        header->code_bytes > sizeof(*arena) - header->code_offset)
+        return;
+
+    unsigned cpu = CPU(ctx)->is_arm9 ? 9u : 7u;
+    char mode = (header->flags & JIT_BLOCK_HEADER_THUMB) ? 't' : 'a';
+    fprintf(stderr, "JITMAP %llx %x arm%u_pc%08x_%c\n",
+            (unsigned long long)(base + header->code_offset),
+            (unsigned)header->code_bytes, cpu, header->pc, mode);
+}
+#endif
 
 typedef struct jit_warm_cache_entry {
     uint32_t pc;
@@ -907,6 +959,17 @@ static int jit_native_cache_try_restore(nds_t *nds)
     jit_native_cache_block_count = header.block_count;
     memcpy(jit_native_cache_dependencies, dependencies, dependencies_size);
     jit_native_cache_dependency_count = header.dependency_count;
+#if defined(SEEDLESS_JIT_PROFILE)
+    if (jit_profile_map_enabled()) {
+        for (uint32_t i = 0; i < header.block_count; i++) {
+            const jit_native_cache_block_t *block = &blocks[i];
+            arm_t *cpu = block->cpu ? &nds->arm9 : &nds->arm7;
+            const uint8_t *entry =
+                (const uint8_t *)jit_block_lookup_cached(cpu, block->pc);
+            jit_profile_map_block(cpu, live, entry);
+        }
+    }
+#endif
     for (uint32_t i = 0; i < header.block_count; i++) {
         const jit_native_cache_block_t *block = &blocks[i];
         arm_t *cpu = block->cpu ? &nds->arm9 : &nds->arm7;
@@ -2610,6 +2673,7 @@ void *jit_cache_lookup_or_compile(void *ctx, uint32_t dir)
 
     if (updated) {
 #if defined(SEEDLESS_JIT_PROFILE)
+        jit_profile_map_block(ctx, ar, updated);
         if (jit_warm_profile_preloading)
             jit_warm_profile_compiled_blocks++;
 #endif
