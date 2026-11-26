@@ -1619,17 +1619,29 @@ void gpu2d_compose_pack_flag_mask_odd_bytes(unsigned char *dst, const unsigned c
 static void table_lookup_64(uint8_t out[16], const uint8_t table[64],
                               const uint8_t idx[16])
 {
+#if defined(__aarch64__) && defined(__ARM_NEON)
+    /* The common affine 8bpp path expands a row a vector at a time. Keep its
+     * 64-entry palette in four NEON table registers and let TBL perform the
+     * bounds check as well as the lookup (indices >= 64 become zero). */
+    const uint8x16x4_t t = vld1q_u8_x4(table);
+    vst1q_u8(out, vqtbl4q_u8(t, vld1q_u8(idx)));
+#else
     int i;
     for (i = 0; i < 16; i++) {
         uint8_t j = idx[i];
         out[i] = (j < 64u) ? table[j] : 0u;
     }
+#endif
 }
 
 static void xor_bytes_16(uint8_t buf[16], uint8_t key)
 {
+#ifdef __ARM_NEON
+    vst1q_u8(buf, veorq_u8(vld1q_u8(buf), vdupq_n_u8(key)));
+#else
     int i;
     for (i = 0; i < 16; i++) buf[i] ^= key;
+#endif
 }
 
 void gpu2d_compose_decode_bg_row_8bpp_indexed(uint8_t *x0, uint8_t *x1, uint8_t *x2, uint8_t *x3,
@@ -1804,26 +1816,42 @@ L_tail:
 
 static void recon_tbl64(uint8_t out[16], const uint8_t table[64], const uint8_t idx[16])
 {
+#if defined(__aarch64__) && defined(__ARM_NEON)
+    const uint8x16x4_t t = vld1q_u8_x4(table);
+    vst1q_u8(out, vqtbl4q_u8(t, vld1q_u8(idx)));
+#else
     int i;
     for (i = 0; i < 16; i++) {
         uint8_t j = idx[i];
         out[i] = (j < 64u) ? table[j] : 0u;
     }
+#endif
 }
 
 static void recon_xor16(uint8_t buf[16], uint8_t key)
 {
+#ifdef __ARM_NEON
+    vst1q_u8(buf, veorq_u8(vld1q_u8(buf), vdupq_n_u8(key)));
+#else
     int i;
     for (i = 0; i < 16; i++) buf[i] ^= key;
+#endif
 }
 
 static void recon_store_pairs(uint8_t *dst, const uint8_t color[16], uint8_t pal)
 {
+#ifdef __ARM_NEON
+    uint8x16x2_t pair;
+    pair.val[0] = vld1q_u8(color);
+    pair.val[1] = vdupq_n_u8(pal);
+    vst2q_u8(dst, pair);
+#else
     int i;
     for (i = 0; i < 16; i++) {
         dst[2 * i]     = color[i];
         dst[2 * i + 1] = pal;
     }
+#endif
 }
 
 void gpu2d_compose_decode_bg_row_8bpp_paletted(uint8_t *x0, uint8_t *x1, uint8_t *x2, uint8_t *x3,
