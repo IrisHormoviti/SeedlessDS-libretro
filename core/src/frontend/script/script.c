@@ -112,12 +112,7 @@ int script_lua_init(unsigned char *machine) {
     }
 
     L = g->lua;
-    {
-        uint32_t bits = 0x43fb8000;
-        float f;
-        __builtin_memcpy(&f, &bits, 4);
-        ((void (*)(void *, uint32_t, float))((void *)luaL_checkversion_))(L, 68, f);
-    }
+    luaL_checkversion(L);
 
 typedef struct script_lua_entry {
     const char *name;
@@ -262,7 +257,6 @@ uint32_t script_is_active(void) {
     return (uint32_t)((SCRIPT_STATE->lua != 0) & (SCRIPT_STATE->loaded != 0));
 }
 
-typedef void     (*fn_f1)(void *, int, float);
 typedef void     (*fn_f2)(void *, int, int);
 typedef void     (*fn_f3)(void *, void *, int);
 typedef uint64_t (*fn_f4)(void *, void *);
@@ -279,11 +273,7 @@ uint64_t script_register_library(const char *name, const void *functions, unsign
     uint8_t flag = *(volatile uint8_t *)&SCRIPT_STATE->loaded;
     if (flag != 0) return 0;
 
-    uint32_t pattern = 0x43fb8000u;
-    float c;
-    memcpy(&c, &pattern, 4);
-
-    ((fn_f1)(((void *)luaL_checkversion_)))(obj, 68, c);
+    luaL_checkversion(obj);
 
     obj = read_object();
     ((fn_f2)(((void *)lua_createtable)))(obj, 0, (int)count - 1);
