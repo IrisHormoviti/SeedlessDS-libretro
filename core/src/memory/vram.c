@@ -16,6 +16,19 @@ static const uint32_t vram_bank_first_slot[VRAM_BANKS] = {
     0x200u, 0x208u, 0x210u, 0x218u, 0x220u, 0x224u, 0x225u, 0x226u, 0x228u
 };
 
+/* Translators return the backing pointer plus the address offset. Unmapped
+ * VRAM therefore rarely returns the page base itself; reject offsets into
+ * both fallback pages before deriving a code-bitmap index from that pointer. */
+static int vram_pointer_is_unmapped(const bus_t *bus, const uint8_t *ptr)
+{
+    uintptr_t address = (uintptr_t)ptr;
+    uintptr_t unmapped = (uintptr_t)bus->unmapped_page;
+    uintptr_t blank = (uintptr_t)bus->blank_page;
+
+    return (address >= unmapped && address - unmapped < 0x4000u) ||
+           (address >= blank && address - blank < sizeof bus->blank_page);
+}
+
 static void *const vram_cache_write_handlers[3] = {
     (void *)vram_reg_cache_write8,
     (void *)vram_reg_cache_write16,
@@ -507,7 +520,7 @@ void *vram_resolve_slot_page64k(bus_t *bus, unsigned char *obj, uint32_t dir) {
     void *(*translate)(void *, uint32_t) = *(void *(**)(void *, uint32_t))(obj + 8);
     unsigned char *p = (unsigned char *)translate(bus, dir);
 
-    if (p == bus->unmapped_page) return 0;
+    if (vram_pointer_is_unmapped(bus, p)) return 0;
 
     unsigned char *base = bus->vram_bank[0];
     unsigned char *table = *(unsigned char **)(obj + 0x38);
@@ -524,7 +537,7 @@ void *vram_resolve_slot64(bus_t *bus, unsigned char *obj, uint32_t dir) {
     void *(*translate)(void *, uint32_t) = *(void *(**)(void *, uint32_t))(obj + 8);
     unsigned char *p = (unsigned char *)translate(bus, dir);
 
-    if (p == bus->unmapped_page) return 0;
+    if (vram_pointer_is_unmapped(bus, p)) return 0;
 
     unsigned char *base = bus->vram_bank[0];
     unsigned char *table = *(unsigned char **)(obj + 64);
