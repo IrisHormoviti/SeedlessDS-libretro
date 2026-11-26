@@ -160,6 +160,7 @@ static bool benchmark(const struct retro_game_info *game, uint64_t warmup, uint6
     if (warmup && (!nds_control_run_to(1 + warmup) ||
                    !wait_until_paused(1 + warmup, &status))) return false;
 #if defined(SEEDLESS_JIT_PROFILE)
+    gpu2d_obj_profile_reset();
     uint64_t warmup_blocks, warmup_analysis_us;
     jit_profile_read(&warmup_blocks, &warmup_analysis_us);
     fprintf(stderr, "JIT analysis after warmup: %"PRIu64" blocks, %"PRIu64
@@ -202,6 +203,20 @@ static bool benchmark(const struct retro_game_info *game, uint64_t warmup, uint6
             ldm_hits_end - ldm_hits_start, ldm_calls_end - ldm_calls_start,
             gxfifo_stm_hits_end - gxfifo_stm_hits_start,
             gxfifo_stm_calls_end - gxfifo_stm_calls_start);
+    uint64_t obj_rows[2][11], obj_pixels[2][11];
+    gpu2d_obj_profile_read(obj_rows, obj_pixels);
+    for (unsigned engine = 0; engine < 2; engine++) {
+        bool any = false;
+        for (unsigned kind = 0; kind < 11; kind++)
+            any |= obj_rows[engine][kind] != 0;
+        if (!any) continue;
+        fprintf(stderr, "2D OBJ profile engine %u:", engine);
+        for (unsigned kind = 0; kind < 11; kind++)
+            if (obj_rows[engine][kind])
+                fprintf(stderr, " kind%u=%"PRIu64" rows/%"PRIu64" width-sum",
+                        kind, obj_rows[engine][kind], obj_pixels[engine][kind]);
+        fputc('\n', stderr);
+    }
 #endif
 #if defined(SEEDLESS_COMPUTE_PROFILE)
     compute_profile_t gpu;

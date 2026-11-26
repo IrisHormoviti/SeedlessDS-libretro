@@ -101,7 +101,10 @@ Configure the build with -DSEEDLESS_JIT_PROFILE=ON to also report cold-start
 block analysis count and time, plus blocks analyzed during warmup. The option
 adds timing only around JIT compilation misses and is off in normal builds.
 It also reports primary target-cache misses and hits in both secondary ways
-during the measured interval, showing what share of misses they rescue.
+during the measured interval, showing what share of misses they rescue. The ROM
+replay tool also reports per-engine OBJ sprite-kind row counts and summed sprite
+widths for the measured interval, to identify which scanline path is worth
+optimizing. Widths are nominal sprite widths, not counts of nontransparent pixels.
 For Linux perf sampling, set `SEEDLESS_JIT_PROFILE_MAP=1` to print each newly
 compiled JIT block's native address, size, CPU, and guest PC to stderr. This
 lets samples from the anonymous JIT arena be attributed to guest code; use it

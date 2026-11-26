@@ -7,6 +7,29 @@
 #include "core_internals.h"
 #include "mem_access.h"
 
+#if defined(SEEDLESS_JIT_PROFILE)
+static uint64_t obj_profile_sprite_rows[2][11];
+static uint64_t obj_profile_sprite_pixels[2][11];
+
+void gpu2d_obj_profile_reset(void)
+{
+    memset(obj_profile_sprite_rows, 0, sizeof obj_profile_sprite_rows);
+    memset(obj_profile_sprite_pixels, 0, sizeof obj_profile_sprite_pixels);
+}
+
+void gpu2d_obj_profile_read(uint64_t rows[2][11], uint64_t pixels[2][11])
+{
+    for (unsigned engine = 0; engine < 2; engine++) {
+        for (unsigned kind = 0; kind < 11; kind++) {
+            rows[engine][kind] = __atomic_load_n(
+                &obj_profile_sprite_rows[engine][kind], __ATOMIC_RELAXED);
+            pixels[engine][kind] = __atomic_load_n(
+                &obj_profile_sprite_pixels[engine][kind], __ATOMIC_RELAXED);
+        }
+    }
+}
+#endif
+
 
 
 
@@ -85,6 +108,12 @@ uint32_t gpu2d_obj_draw_line(gpu2d_engine_t *ctx, uint8_t *px, uint8_t *atr,
             uint32_t j, w0, w1, base;
 
             if (type > 10) continue;
+#if defined(SEEDLESS_JIT_PROFILE)
+            __atomic_fetch_add(&obj_profile_sprite_rows[ctx->index & 1u][type],
+                               1, __ATOMIC_RELAXED);
+            __atomic_fetch_add(&obj_profile_sprite_pixels[ctx->index & 1u][type],
+                               s->width, __ATOMIC_RELAXED);
+#endif
             if (type == 3 || type == 7) continue;
 
             sx       = s->x;

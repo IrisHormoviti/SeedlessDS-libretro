@@ -170,6 +170,8 @@ void jit_warm_cache_profile_read(uint64_t *loaded, uint64_t *signature_skips,
                                  uint64_t *native_blocks_restored);
 void jit_profile_reset(void);
 void jit_profile_read(uint64_t *blocks, uint64_t *analysis_us);
+void gpu2d_obj_profile_reset(void);
+void gpu2d_obj_profile_read(uint64_t rows[2][11], uint64_t pixels[2][11]);
 void jit_dispatch_profile_read(uint64_t *primary_misses, uint64_t *secondary_hits);
 void jit_dispatch_profile_read_ways(uint64_t *primary_misses,
                                     uint64_t *secondary_way0_hits,
