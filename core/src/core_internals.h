@@ -171,6 +171,9 @@ void jit_warm_cache_profile_read(uint64_t *loaded, uint64_t *signature_skips,
 void jit_profile_reset(void);
 void jit_profile_read(uint64_t *blocks, uint64_t *analysis_us);
 void jit_dispatch_profile_read(uint64_t *primary_misses, uint64_t *secondary_hits);
+void jit_dispatch_profile_read_ways(uint64_t *primary_misses,
+                                    uint64_t *secondary_way0_hits,
+                                    uint64_t *secondary_way1_hits);
 void jit_transfer_profile_read(uint64_t *ldm_calls, uint64_t *ldm_hits,
                                uint64_t *gxfifo_stm_calls, uint64_t *gxfifo_stm_hits);
 void jit_cache_refresh_block_info(unsigned char *ctx);

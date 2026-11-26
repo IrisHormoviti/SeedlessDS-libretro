@@ -43,8 +43,10 @@ static uint64_t jit_native_hash_u64(uint64_t hash, uint64_t value);
 
 #define JIT_WARM_CACHE_MAGIC 0x574a5344u
 #define JIT_WARM_CACHE_VERSION 3u
-#define JIT_WARM_CACHE_MAX_ENTRIES 256u
-#define JIT_WARM_CACHE_PREWARM_ENTRIES JIT_WARM_CACHE_MAX_ENTRIES
+/* Keep a broad session history for multi-minute play sessions, but bound the
+ * amount compiled synchronously during ROM startup to protect launch time. */
+#define JIT_WARM_CACHE_MAX_ENTRIES 8192u
+#define JIT_WARM_CACHE_PREWARM_ENTRIES 2048u
 #define JIT_WARM_CACHE_SIGNATURE_HALFWORDS 4u
 #define JIT_NATIVE_CACHE_MAGIC 0x4e4a5344u
 #define JIT_NATIVE_CACHE_VERSION 2u
@@ -164,6 +166,8 @@ static uint8_t jit_native_cache_complete;
 static uint8_t jit_native_cache_block_dependency_overflow;
 static uint64_t jit_native_cache_initial_mapping_signature;
 #if defined(SEEDLESS_JIT_PROFILE)
+static uint64_t jit_native_mapping_initial_checkpoints[BUS_REGIONS + 7];
+static uint64_t jit_native_mapping_checkpoints[BUS_REGIONS + 7];
 extern void seedless_libretro_native_cache_report(const char *status,
     uint32_t blocks, uint32_t dependencies, uint32_t itcm_variants, int error);
 #define JIT_NATIVE_CACHE_REPORT(status, error, nds) \
@@ -198,6 +202,10 @@ void jit_warm_cache_clear(void)
     jit_native_cache_block_dependency_overflow = 0;
     jit_native_cache_initial_mapping_signature = 0;
 #if defined(SEEDLESS_JIT_PROFILE)
+    memset(jit_native_mapping_initial_checkpoints, 0,
+           sizeof jit_native_mapping_initial_checkpoints);
+    memset(jit_native_mapping_checkpoints, 0,
+           sizeof jit_native_mapping_checkpoints);
     jit_warm_profile_loaded = 0;
     jit_warm_profile_signature_skips = 0;
     jit_warm_profile_already_compiled = 0;
@@ -643,6 +651,9 @@ static uint64_t jit_native_mapping_signature(const nds_t *nds)
                 !jit_native_hash_region_pointer(nds, &hash,
                     (uintptr_t)region->code_bits, 0))
                 return 0;
+#if defined(SEEDLESS_JIT_PROFILE)
+            jit_native_mapping_checkpoints[i] = hash;
+#endif
             continue;
         }
         hash = jit_native_hash_u64(hash, region->read_kind);
@@ -668,22 +679,75 @@ static uint64_t jit_native_mapping_signature(const nds_t *nds)
             !jit_native_hash_region_pointer(nds, &hash,
                 (uintptr_t)region->bitmap_lookup[1], 1))
             return 0;
+#if defined(SEEDLESS_JIT_PROFILE)
+        jit_native_mapping_checkpoints[i] = hash;
+#endif
     }
+#if defined(SEEDLESS_JIT_PROFILE)
+    jit_native_mapping_checkpoints[BUS_REGIONS] = hash;
+#endif
     for (uint32_t i = 0; i < VRAM_BANKS; i++)
         if (!jit_native_hash_region_pointer(nds, &hash,
                 (uintptr_t)bus->vram_bank[i], 0))
             return 0;
+#if defined(SEEDLESS_JIT_PROFILE)
+    jit_native_mapping_checkpoints[BUS_REGIONS + 1] = hash;
+#endif
     for (uint32_t i = 0; i < 2; i++)
         for (uint32_t j = 0; j < 2; j++)
             if (!jit_native_hash_region_pointer(nds, &hash,
                     (uintptr_t)bus->wram_window[i][j], 0))
                 return 0;
+#if defined(SEEDLESS_JIT_PROFILE)
+    jit_native_mapping_checkpoints[BUS_REGIONS + 2] = hash;
+    jit_native_mapping_checkpoints[BUS_REGIONS + 3] = bus->dtcm_start;
+    jit_native_mapping_checkpoints[BUS_REGIONS + 4] = bus->dtcm_end;
+    jit_native_mapping_checkpoints[BUS_REGIONS + 5] = bus->itcm_size;
+    jit_native_mapping_checkpoints[BUS_REGIONS + 6] =
+        nds->arm9.cp15->dtcm_below_64mb;
+#endif
     hash = jit_native_hash_u64(hash, bus->dtcm_start);
     hash = jit_native_hash_u64(hash, bus->dtcm_end);
     hash = jit_native_hash_u64(hash, bus->itcm_size);
     hash = jit_native_hash_u64(hash, nds->arm9.cp15->dtcm_below_64mb);
     return hash ? hash : 1;
 }
+
+#if defined(SEEDLESS_JIT_PROFILE)
+static const char *jit_native_mapping_mismatch_status(void)
+{
+    static char status[48];
+    for (uint32_t i = 0; i < BUS_REGIONS; i++) {
+        if (jit_native_mapping_checkpoints[i] !=
+            jit_native_mapping_initial_checkpoints[i]) {
+            snprintf(status, sizeof status, "bus-region-%u-changed", i);
+            return status;
+        }
+    }
+    if (jit_native_mapping_checkpoints[BUS_REGIONS] !=
+        jit_native_mapping_initial_checkpoints[BUS_REGIONS])
+        return "bus-region-map-changed";
+    if (jit_native_mapping_checkpoints[BUS_REGIONS + 1] !=
+        jit_native_mapping_initial_checkpoints[BUS_REGIONS + 1])
+        return "vram-map-changed";
+    if (jit_native_mapping_checkpoints[BUS_REGIONS + 2] !=
+        jit_native_mapping_initial_checkpoints[BUS_REGIONS + 2])
+        return "wram-map-changed";
+    if (jit_native_mapping_checkpoints[BUS_REGIONS + 3] !=
+        jit_native_mapping_initial_checkpoints[BUS_REGIONS + 3])
+        return "dtcm-start-changed";
+    if (jit_native_mapping_checkpoints[BUS_REGIONS + 4] !=
+        jit_native_mapping_initial_checkpoints[BUS_REGIONS + 4])
+        return "dtcm-end-changed";
+    if (jit_native_mapping_checkpoints[BUS_REGIONS + 5] !=
+        jit_native_mapping_initial_checkpoints[BUS_REGIONS + 5])
+        return "itcm-size-changed";
+    if (jit_native_mapping_checkpoints[BUS_REGIONS + 6] !=
+        jit_native_mapping_initial_checkpoints[BUS_REGIONS + 6])
+        return "dtcm-fastpath-flag-changed";
+    return "dtcm-itcm-map-changed";
+}
+#endif
 
 static int jit_native_cache_try_restore(nds_t *nds)
 {
@@ -1017,10 +1081,29 @@ static void jit_native_cache_save(nds_t *nds)
     }
     /* Invalidation bitmaps are indexed through the live bus mapping. Persist
      * them only when that mapping still matches the post-reset layout. */
-    if (!jit_native_cache_initial_mapping_signature ||
-        jit_native_mapping_signature(nds) !=
-        jit_native_cache_initial_mapping_signature) {
+    uint64_t mapping_signature = jit_native_mapping_signature(nds);
+    if (!jit_native_cache_initial_mapping_signature) {
+#if defined(SEEDLESS_JIT_PROFILE)
+        JIT_NATIVE_CACHE_REPORT("initial-mapping-signature-invalid", 0, nds);
+#else
+        JIT_NATIVE_CACHE_REPORT("bus-mapping-invalid", 0, nds);
+#endif
+        return;
+    }
+    if (!mapping_signature) {
+#if defined(SEEDLESS_JIT_PROFILE)
+        JIT_NATIVE_CACHE_REPORT("live-mapping-signature-invalid", 0, nds);
+#else
+        JIT_NATIVE_CACHE_REPORT("bus-mapping-invalid", 0, nds);
+#endif
+        return;
+    }
+    if (mapping_signature != jit_native_cache_initial_mapping_signature) {
+#if defined(SEEDLESS_JIT_PROFILE)
+        JIT_NATIVE_CACHE_REPORT(jit_native_mapping_mismatch_status(), 0, nds);
+#else
         JIT_NATIVE_CACHE_REPORT("bus-mapping-changed", 0, nds);
+#endif
         return;
     }
 
@@ -1219,24 +1302,22 @@ void jit_warm_cache_begin(unsigned char *machine)
             jit_warm_cache_entries[valid_count++] = entry;
         }
         jit_warm_cache_count = valid_count;
-        jit_warm_cache_preload_count = valid_count;
-        if (jit_warm_cache_preload_count > JIT_WARM_CACHE_PREWARM_ENTRIES)
-            jit_warm_cache_preload_count = JIT_WARM_CACHE_PREWARM_ENTRIES;
-        for (uint32_t i = 0; i < jit_warm_cache_preload_count; i++)
-            jit_warm_cache_preload_entries[i] =
-                jit_warm_cache_entries[valid_count - i - 1];
-        /* The persisted list is oldest-to-newest for LRU tie-breaking. Rank
-         * repeated frame-boundary samples first, keeping newest entries first
-         * when two blocks have equal sample counts. */
-        for (uint32_t i = 1; i < jit_warm_cache_preload_count; i++) {
-            jit_warm_cache_entry_t entry = jit_warm_cache_preload_entries[i];
-            uint32_t j = i;
+        /* Keep the highest-sampled blocks from the entire manifest, with
+         * newest entries winning ties. The file is oldest-to-newest. */
+        jit_warm_cache_preload_count = 0;
+        for (uint32_t i = valid_count; i != 0; i--) {
+            jit_warm_cache_entry_t entry = jit_warm_cache_entries[i - 1];
+            uint32_t j = jit_warm_cache_preload_count;
             while (j != 0 &&
-                   jit_warm_cache_preload_entries[j - 1].samples < entry.samples) {
-                jit_warm_cache_preload_entries[j] =
-                    jit_warm_cache_preload_entries[j - 1];
+                   jit_warm_cache_preload_entries[j - 1].samples < entry.samples)
                 j--;
-            }
+            if (j >= JIT_WARM_CACHE_PREWARM_ENTRIES)
+                continue;
+            if (jit_warm_cache_preload_count < JIT_WARM_CACHE_PREWARM_ENTRIES)
+                jit_warm_cache_preload_count++;
+            for (uint32_t k = jit_warm_cache_preload_count - 1; k > j; k--)
+                jit_warm_cache_preload_entries[k] =
+                    jit_warm_cache_preload_entries[k - 1];
             jit_warm_cache_preload_entries[j] = entry;
         }
     }
@@ -1271,9 +1352,19 @@ void jit_warm_cache_preload(unsigned char *machine, int allow)
     if (allow == 0 || nds->runtime.jit_enabled == 0)
         return;
 
-    if (allow == 1)
+    if (allow == 1) {
         jit_native_cache_initial_mapping_signature =
             jit_native_mapping_signature(nds);
+#if defined(SEEDLESS_JIT_PROFILE)
+        if (!jit_native_cache_initial_mapping_signature)
+            JIT_NATIVE_CACHE_REPORT("initial-mapping-signature-invalid", 0, nds);
+#endif
+#if defined(SEEDLESS_JIT_PROFILE)
+        memcpy(jit_native_mapping_initial_checkpoints,
+               jit_native_mapping_checkpoints,
+               sizeof jit_native_mapping_initial_checkpoints);
+#endif
+    }
 
     /* Restore only on a regular ROM boot. Savestate restoration has different
      * RAM and mapping contents; it keeps the existing signature-checked,
@@ -1424,6 +1515,7 @@ void jit_warm_cache_sample(void *ctx, uint32_t pc)
     if (index < jit_warm_cache_count &&
         jit_warm_cache_entries[index].samples != UINT32_MAX)
         jit_warm_cache_entries[index].samples++;
+
 }
 
 void jit_warm_cache_save(void)
@@ -2358,6 +2450,21 @@ void jit_dispatch_profile_read(uint64_t *primary_misses, uint64_t *secondary_hit
                         + __atomic_load_n(&jit_dispatch_profile_counters[1][1], __ATOMIC_RELAXED)
                         + __atomic_load_n(&jit_dispatch_profile_counters[0][2], __ATOMIC_RELAXED)
                         + __atomic_load_n(&jit_dispatch_profile_counters[1][2], __ATOMIC_RELAXED);
+}
+
+void jit_dispatch_profile_read_ways(uint64_t *primary_misses,
+                                    uint64_t *secondary_way0_hits,
+                                    uint64_t *secondary_way1_hits)
+{
+    uint64_t way0 = __atomic_load_n(&jit_dispatch_profile_counters[0][1], __ATOMIC_RELAXED)
+                  + __atomic_load_n(&jit_dispatch_profile_counters[1][1], __ATOMIC_RELAXED);
+    uint64_t way1 = __atomic_load_n(&jit_dispatch_profile_counters[0][2], __ATOMIC_RELAXED)
+                  + __atomic_load_n(&jit_dispatch_profile_counters[1][2], __ATOMIC_RELAXED);
+    if (primary_misses)
+        *primary_misses = __atomic_load_n(&jit_dispatch_profile_counters[0][0], __ATOMIC_RELAXED)
+                        + __atomic_load_n(&jit_dispatch_profile_counters[1][0], __ATOMIC_RELAXED);
+    if (secondary_way0_hits) *secondary_way0_hits = way0;
+    if (secondary_way1_hits) *secondary_way1_hits = way1;
 }
 #endif
 

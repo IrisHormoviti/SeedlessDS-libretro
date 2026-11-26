@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <errno.h>
+#include <time.h>
 
 #include <libretro.h>
 #include "libretro_internal.h"
@@ -19,6 +20,7 @@
 #endif
 
 #include "seedlessds/nds.h"
+#include "seedlessds/control.h"
 #include "seedlessds/platform.h"
 #include "frontend/frontend.h"
 
@@ -26,6 +28,20 @@
 void recon_present_set_mode(unsigned mode);
 extern unsigned recon_present_flips;
 extern unsigned recon_present_seen;
+#if defined(SEEDLESS_JIT_PROFILE)
+void jit_profile_reset(void);
+void jit_profile_read(uint64_t *blocks, uint64_t *analysis_us);
+void jit_dispatch_profile_read_ways(uint64_t *primary_misses,
+                                    uint64_t *secondary_way0_hits,
+                                    uint64_t *secondary_way1_hits);
+void jit_transfer_profile_read(uint64_t *ldm_calls, uint64_t *ldm_hits,
+                               uint64_t *gxfifo_stm_calls,
+                               uint64_t *gxfifo_stm_hits);
+void jit_warm_cache_profile_read(uint64_t *loaded, uint64_t *signature_skips,
+                                 uint64_t *already_compiled, uint64_t *candidates,
+                                 uint64_t *compiled_blocks,
+                                 uint64_t *native_blocks_restored);
+#endif
 #define RECON_PRESENT_PREDICATE 1u
 #define RECON_PRESENT_NO_UPLOAD 4u
 
@@ -70,10 +86,16 @@ extern void jit_native_cache_set_root(const char *path);
 void seedless_libretro_native_cache_report(const char *status,
     uint32_t blocks, uint32_t dependencies, uint32_t itcm_variants, int error)
 {
-    if (log_cb)
+    const char *profile = getenv("SEEDLESS_JIT_STATS");
+    if (profile && strcmp(profile, "1") == 0) {
+        fprintf(stderr,
+            CORE_NAME ": native JIT cache save: %s blocks=%u deps=%u itcm=%u errno=%d\n",
+            status, blocks, dependencies, itcm_variants, error);
+    } else if (log_cb) {
         log_cb(RETRO_LOG_INFO,
             CORE_NAME ": native JIT cache save: %s blocks=%u deps=%u itcm=%u errno=%d\n",
             status, blocks, dependencies, itcm_variants, error);
+    }
 }
 
 /* Called by the core after cart backup mounting has fully initialized RAM. */
@@ -124,6 +146,94 @@ static size_t g_frame_pixels;
  * reduced 256×192 screens, 2..8 present the engine's full-resolution pages. */
 static unsigned g_scale = 1;
 static int16_t g_audio_tmp[SEEDLESS_AUDIO_RATE]; /* stereo frames * 2 */
+
+/* Optional frontend profiling and uncapped emulation controls. These are
+ * deliberately environment-only so normal libretro behavior is unchanged. */
+static int g_pace_profile_enabled;
+static uint32_t g_pace_flip_us;
+static uint32_t g_pace_video_us;
+static uint32_t g_pace_audio_us;
+
+static uint64_t pace_profile_now_ns(void)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0)
+        return 0;
+    return (uint64_t)now.tv_sec * 1000000000ull + (uint64_t)now.tv_nsec;
+}
+
+static uint32_t pace_profile_elapsed_us(uint64_t start)
+{
+    uint64_t end = pace_profile_now_ns();
+    uint64_t elapsed = end >= start ? (end - start) / 1000ull : 0;
+    return elapsed > UINT32_MAX ? UINT32_MAX : (uint32_t)elapsed;
+}
+
+#if defined(SEEDLESS_JIT_PROFILE)
+static void report_jit_profile(void)
+{
+    const char *enabled = getenv("SEEDLESS_JIT_STATS");
+    uint64_t blocks = 0, analysis_us = 0, misses = 0, secondary_way0 = 0, secondary_way1 = 0;
+    uint64_t ldm_calls = 0, ldm_hits = 0, gx_calls = 0, gx_hits = 0;
+    uint64_t warm_loaded = 0, signature_skips = 0, already_compiled = 0;
+    uint64_t candidates = 0, warm_compiled = 0, native_restored = 0;
+
+    if (!enabled || strcmp(enabled, "1") != 0)
+        return;
+    jit_profile_read(&blocks, &analysis_us);
+    jit_dispatch_profile_read_ways(&misses, &secondary_way0, &secondary_way1);
+    jit_transfer_profile_read(&ldm_calls, &ldm_hits, &gx_calls, &gx_hits);
+    jit_warm_cache_profile_read(&warm_loaded, &signature_skips,
+        &already_compiled, &candidates, &warm_compiled, &native_restored);
+    fprintf(stderr,
+        "SeedlessDS JIT profile: blocks=%llu analysis_us=%llu dispatch_primary_miss=%llu secondary_way0=%llu secondary_way1=%llu ldm=%llu/%llu gxfifo_stm=%llu/%llu warm_loaded=%llu warm_candidates=%llu warm_compiled=%llu native_restored=%llu signature_skips=%llu already_compiled=%llu\n",
+        (unsigned long long)blocks, (unsigned long long)analysis_us,
+        (unsigned long long)misses, (unsigned long long)secondary_way0,
+        (unsigned long long)secondary_way1,
+        (unsigned long long)ldm_hits, (unsigned long long)ldm_calls,
+        (unsigned long long)gx_hits, (unsigned long long)gx_calls,
+        (unsigned long long)warm_loaded, (unsigned long long)candidates,
+        (unsigned long long)warm_compiled, (unsigned long long)native_restored,
+        (unsigned long long)signature_skips,
+        (unsigned long long)already_compiled);
+}
+#endif
+
+#if defined(SEEDLESS_COMPUTE_PROFILE) && defined(SEEDLESS_GLES_COMPUTE)
+static void report_compute_profile(void)
+{
+    const char *enabled = getenv("SEEDLESS_COMPUTE_STATS");
+    compute_profile_t profile;
+    if (!enabled || strcmp(enabled, "1") != 0)
+        return;
+
+    compute_profile_read(&profile);
+    if (profile.draws == 0)
+        return;
+
+    double scale = 1.0 / (double)profile.draws / 1000.0;
+    double gpu_scale = profile.gpu_timed_draws
+        ? 1.0 / (double)profile.gpu_timed_draws / 1000.0 : 0.0;
+    fprintf(stderr,
+        "SeedlessDS compute profile: draws=%llu upload_us=%.2f submit_us=%.2f "
+        "map_wait_us=%.2f copy_us=%.2f gpu_us=%.2f gpu_timed=%llu "
+        "gpu_disjoint=%llu\n",
+        (unsigned long long)profile.draws,
+        profile.upload_ns * scale, profile.submit_ns * scale,
+        profile.map_wait_ns * scale, profile.copy_ns * scale,
+        profile.gpu_ns * gpu_scale,
+        (unsigned long long)profile.gpu_timed_draws,
+        (unsigned long long)profile.gpu_disjoint_draws);
+}
+#endif
+
+__attribute__((visibility("default")))
+void seedlessds_pace_timing(uint32_t *flip, uint32_t *video, uint32_t *audio)
+{
+    if (flip) *flip = g_pace_profile_enabled ? g_pace_flip_us : 0;
+    if (video) *video = g_pace_profile_enabled ? g_pace_video_us : 0;
+    if (audio) *audio = g_pace_profile_enabled ? g_pace_audio_us : 0;
+}
 
 static void log_fallback(enum retro_log_level level, const char *fmt, ...)
 {
@@ -865,6 +975,7 @@ void retro_run(void)
 {
     nds_input_t input;
     int ms;
+    uint64_t profile_start = 0;
 
     pthread_mutex_lock(&g_save_ram_mutex);
     g_frontend_started = 1;
@@ -885,6 +996,8 @@ void retro_run(void)
 
     /* Bounded wait: never block RetroArch's menu / input forever if the
      * emu thread stalls before producing a flip. */
+    if (g_pace_profile_enabled)
+        profile_start = pace_profile_now_ns();
     for (ms = 0; ms < 32; ms++) {
         if (recon_present_seen != recon_present_flips) {
             nds_wait_screen(g_nds);
@@ -892,9 +1005,21 @@ void retro_run(void)
         }
         usleep(1000);
     }
+    if (g_pace_profile_enabled)
+        g_pace_flip_us = pace_profile_elapsed_us(profile_start);
 
+    if (g_pace_profile_enabled)
+        profile_start = pace_profile_now_ns();
     present_video();
+    if (g_pace_profile_enabled)
+        g_pace_video_us = pace_profile_elapsed_us(profile_start);
+
+    if (g_pace_profile_enabled)
+        profile_start = pace_profile_now_ns();
     present_audio();
+    if (g_pace_profile_enabled)
+        g_pace_audio_us = pace_profile_elapsed_us(profile_start);
+
     pump_microphone();
     seedless_mic_service();
 }
@@ -1167,6 +1292,9 @@ bool retro_load_game(const struct retro_game_info *info)
     environ_cb(RETRO_ENVIRONMENT_SET_PIXEL_FORMAT, &fmt);
     environ_cb(RETRO_ENVIRONMENT_SET_INPUT_DESCRIPTORS, desc);
     set_seedless_root();
+    g_pace_profile_enabled = getenv("SEEDLESS_PACE_PROFILE") != NULL &&
+        strcmp(getenv("SEEDLESS_PACE_PROFILE"), "1") == 0;
+    g_pace_flip_us = g_pace_video_us = g_pace_audio_us = 0;
     g_scale = opt_scale("seedlessds_resolution", 1);
     apply_core_options(0);
 
@@ -1176,12 +1304,18 @@ bool retro_load_game(const struct retro_game_info *info)
      * created, so the requested resolution has to be in place first. */
     nds_set_internal_resolution(NULL, g_scale);
 
+#if defined(SEEDLESS_JIT_PROFILE)
+    jit_profile_reset();
+#endif
     g_nds = nds_create(NULL, 0, 0);
     if (!g_nds) {
         if (log_cb)
             log_cb(RETRO_LOG_ERROR, CORE_NAME ": nds_create failed\n");
         return false;
     }
+
+    nds_control_set_unpaced(getenv("SEEDLESS_UNPACED") != NULL &&
+        strcmp(getenv("SEEDLESS_UNPACED"), "1") == 0);
 
     recon_present_set_mode(RECON_PRESENT_PREDICATE | RECON_PRESENT_NO_UPLOAD);
     seedless_audio_reset();
@@ -1198,6 +1332,7 @@ bool retro_load_game(const struct retro_game_info *info)
     g_stylus_touching = 0;
 
 #ifdef SEEDLESS_GLES_COMPUTE
+    compute_profile_reset();
     const char *renderer = opt_value("seedlessds_renderer", "software");
     if (!strcmp(renderer, "compute") || !strcmp(renderer, "verify"))
         compute_start(!strcmp(renderer, "verify"));
@@ -1269,7 +1404,13 @@ void retro_unload_game(void)
     nds_signal_screen(g_nds);
     if (g_emu_running || g_emu_started)
         pthread_join(g_emu_thread, NULL);
+#if defined(SEEDLESS_JIT_PROFILE)
+    report_jit_profile();
+#endif
     nds_destroy(g_nds);
+#if defined(SEEDLESS_COMPUTE_PROFILE) && defined(SEEDLESS_GLES_COMPUTE)
+    report_compute_profile();
+#endif
 #ifdef SEEDLESS_GLES_COMPUTE
     compute_stop();
 #endif

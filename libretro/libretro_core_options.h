@@ -221,7 +221,7 @@ struct retro_core_option_v2_definition option_defs_us[] = {
       "seedlessds_audio_latency",
       "Audio Latency",
       NULL,
-      "OpenSL buffer size: Low ≈ 1 frame, Medium ≈ 2, High ≈ 4.",
+      "Native OpenSL buffer size: Low ≈ 1 frame, Medium ≈ 2, High ≈ 4. Libretro frontends control their own audio buffering.",
       NULL,
       "audio",
       {

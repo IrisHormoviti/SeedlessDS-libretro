@@ -139,6 +139,15 @@ void jit_dispatch_profile_read(uint64_t *primary_misses, uint64_t *secondary_hit
     if (secondary_hits) *secondary_hits = 0;
 }
 
+void jit_dispatch_profile_read_ways(uint64_t *primary_misses,
+                                    uint64_t *secondary_way0_hits,
+                                    uint64_t *secondary_way1_hits)
+{
+    if (primary_misses) *primary_misses = 0;
+    if (secondary_way0_hits) *secondary_way0_hits = 0;
+    if (secondary_way1_hits) *secondary_way1_hits = 0;
+}
+
 void jit_transfer_profile_read(uint64_t *ldm_calls, uint64_t *ldm_hits,
                                uint64_t *gxfifo_stm_calls, uint64_t *gxfifo_stm_hits)
 {

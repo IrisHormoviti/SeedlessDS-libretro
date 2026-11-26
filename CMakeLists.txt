@@ -138,6 +138,9 @@ target_compile_definitions(seedlessds_libretro PRIVATE
     _GNU_SOURCE
     SEEDLESS_LIBRETRO=1
 )
+if(SEEDLESS_JIT_PROFILE)
+    target_compile_definitions(seedlessds_libretro PRIVATE SEEDLESS_JIT_PROFILE=1)
+endif()
 if(SEEDLESS_COMPUTE_PROFILE)
     target_compile_definitions(seedlessds_libretro PRIVATE SEEDLESS_COMPUTE_PROFILE=1)
 endif()
