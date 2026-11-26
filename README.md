@@ -176,6 +176,11 @@ loading and JIT compilation separately. Use a recorded startup block set to
 evaluate prewarming while retaining JIT fallback for overlays and modified code.
 [melonDS GPU compositor](https://github.com/melonDS-emu/melonDS/blob/906e9ebb27da8c6a715cd7abab4abfe8a8d29427/src/GPU_OpenGL.cpp)
 
+Follow-up: investigate frontend audio delay on ClamOS. Check whether the frontend
+handles `RETRO_ENVIRONMENT_SET_MINIMUM_AUDIO_LATENCY`, how many callback periods
+it primes, and whether its output queue can grow without a bound during pacing
+stalls. Tune these frontend settings independently of emulated audio generation.
+
 ---
 
 ## Usage
